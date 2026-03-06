@@ -14,6 +14,8 @@ use crate::error::AppError;
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
+    let app_name = env!("CARGO_PKG_NAME");
+
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
@@ -22,7 +24,7 @@ async fn main() -> Result<(), AppError> {
     let args = Args::parse();
     info!("Starting application with verbosity: {}", args.verbose);
 
-    let cfg: AppConfig = confy::load("my-rust-app", None)?;
+    let cfg: AppConfig = confy::load(app_name, None)?;
     info!("Configuration loaded: {:?}", cfg);
 
     if let Err(e) = app(cfg).await {
