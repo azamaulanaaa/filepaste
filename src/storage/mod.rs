@@ -3,9 +3,13 @@ pub mod local;
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use tokio::io::{AsyncRead, AsyncWrite};
+
+pub type AsyncFileReader = Pin<Box<dyn AsyncRead + Send>>;
 
 #[derive(Debug, Clone)]
 pub struct FileMetadata {
@@ -41,8 +45,8 @@ impl Resource {
 
 #[async_trait]
 pub trait FileStorage: Send + Sync {
-    async fn put(&self, path: &Path, content: Vec<u8>) -> io::Result<()>;
-    async fn get(&self, path: &Path) -> io::Result<Option<Vec<u8>>>;
+    async fn put(&self, path: &Path, mut content: AsyncFileReader) -> io::Result<u64>;
+    async fn get(&self, path: &Path) -> io::Result<Option<AsyncFileReader>>;
     async fn delete(&self, path: &Path) -> io::Result<()>;
     async fn metadata(&self, path: &Path) -> io::Result<Option<FileMetadata>>;
     async fn list(&self, path: &Path) -> io::Result<Vec<Resource>>;
@@ -52,17 +56,32 @@ pub trait FileStorage: Send + Sync {
 mod tests {
     use super::*;
 
-    pub async fn run_consistency_test_suite<S: FileStorage>(storage: S) {
+    use std::io::Cursor;
+
+    use tokio::io::AsyncReadExt;
+
+    async fn run_consistency_test_suite<S: FileStorage>(storage: S) {
         let path = Path::new("consistency_test.txt");
         let content = b"universal data".to_vec();
 
         // 1. Test Put & Get
-        storage
-            .put(path, content.clone())
+        // We wrap the slice in Box::pin because the trait expects Pin<Box<dyn AsyncRead>>
+        let reader = Box::pin(Cursor::new(content.clone()));
+        storage.put(path, reader).await.expect("Put failed");
+
+        let mut retrieved_reader = storage
+            .get(path)
             .await
-            .expect("Put failed");
-        let retrieved = storage.get(path).await.expect("Get failed");
-        assert_eq!(retrieved, Some(content), "Data mismatch after Put/Get");
+            .expect("Get failed")
+            .expect("Should return Some reader");
+
+        let mut retrieved_buffer = Vec::new();
+        retrieved_reader
+            .read_to_end(&mut retrieved_buffer)
+            .await
+            .expect("Read failed");
+
+        assert_eq!(retrieved_buffer, content, "Data mismatch after Put/Get");
 
         // 2. Test Metadata
         let meta = storage
@@ -77,8 +96,8 @@ mod tests {
         let file1 = dir.join("file1.tmp");
         let file2 = dir.join("file2.tmp");
 
-        storage.put(&file1, b"1".to_vec()).await.unwrap();
-        storage.put(&file2, b"2".to_vec()).await.unwrap();
+        storage.put(&file1, Box::pin(&b"1"[..])).await.unwrap();
+        storage.put(&file2, Box::pin(&b"2"[..])).await.unwrap();
 
         let list = storage.list(dir).await.expect("List failed");
         assert!(list.iter().any(|r| r.path() == file1));

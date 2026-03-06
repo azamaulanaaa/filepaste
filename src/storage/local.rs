@@ -1,9 +1,10 @@
-use async_trait::async_trait;
 use std::io;
 use std::path::{Path, PathBuf};
-use tokio::fs;
 
-use super::{DirMetadata, FileMetadata, FileStorage, Resource};
+use async_trait::async_trait;
+use tokio::fs::{self, File};
+
+use super::{AsyncFileReader, DirMetadata, FileMetadata, FileStorage, Resource};
 
 pub struct LocalStorage {
     root: PathBuf,
@@ -48,10 +49,9 @@ impl LocalStorage {
 
 #[async_trait]
 impl FileStorage for LocalStorage {
-    async fn put(&self, path: &Path, content: Vec<u8>) -> io::Result<()> {
+    async fn put(&self, path: &Path, mut content: AsyncFileReader) -> io::Result<u64> {
         let full_path = self.full_path(path);
 
-        // 1. REJECT if the path is already a directory
         if full_path.is_dir() {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
@@ -59,9 +59,7 @@ impl FileStorage for LocalStorage {
             ));
         }
 
-        // 2. Ensure parent structure exists
         if let Some(parent) = full_path.parent() {
-            // If the parent is a file, we can't make it a directory
             if parent.is_file() {
                 return Err(io::Error::new(
                     io::ErrorKind::Other,
@@ -71,13 +69,18 @@ impl FileStorage for LocalStorage {
             fs::create_dir_all(parent).await?;
         }
 
-        fs::write(&full_path, content).await
+        // Create the file and use tokio::io::copy to stream data from the reader
+        let mut file = File::create(&full_path).await?;
+        let bytes_written = tokio::io::copy(&mut content, &mut file).await?;
+
+        Ok(bytes_written)
     }
 
-    async fn get(&self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+    async fn get(&self, path: &Path) -> io::Result<Option<AsyncFileReader>> {
         let full_path = self.full_path(path);
-        match fs::read(full_path).await {
-            Ok(content) => Ok(Some(content)),
+
+        match File::open(full_path).await {
+            Ok(file) => Ok(Some(Box::pin(file))),
             Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
             Err(e) => Err(e),
         }

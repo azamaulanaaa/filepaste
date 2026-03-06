@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, HashMap};
-use std::io;
+use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
 
-use super::{DirMetadata, FileMetadata, FileStorage, Resource};
+use super::{AsyncFileReader, DirMetadata, FileMetadata, FileStorage, Resource};
 
 pub struct InMemoryStorage {
     data: RwLock<BTreeMap<PathBuf, (Vec<u8>, SystemTime)>>,
@@ -22,15 +22,28 @@ impl InMemoryStorage {
 
 #[async_trait]
 impl FileStorage for InMemoryStorage {
-    async fn put(&self, path: &Path, content: Vec<u8>) -> io::Result<()> {
+    async fn put(&self, path: &Path, mut content: AsyncFileReader) -> io::Result<u64> {
+        let mut buffer = Vec::new();
+        // Drain the reader into our local buffer
+        let bytes_written = tokio::io::copy(&mut content, &mut buffer).await?;
+
         let mut map = self.data.write().unwrap();
-        map.insert(path.to_path_buf(), (content, SystemTime::now()));
-        Ok(())
+        map.insert(path.to_path_buf(), (buffer, SystemTime::now()));
+
+        Ok(bytes_written)
     }
 
-    async fn get(&self, path: &Path) -> io::Result<Option<Vec<u8>>> {
+    async fn get(&self, path: &Path) -> io::Result<Option<AsyncFileReader>> {
         let map = self.data.read().unwrap();
-        Ok(map.get(path).map(|(bytes, _)| bytes.clone()))
+
+        if let Some((bytes, _)) = map.get(path) {
+            // We clone the bytes to give the caller their own owned reader.
+            // In an in-memory mock, this is usually acceptable.
+            let cursor = Cursor::new(bytes.clone());
+            return Ok(Some(Box::pin(cursor)));
+        }
+
+        Ok(None)
     }
 
     async fn delete(&self, path: &Path) -> io::Result<()> {
