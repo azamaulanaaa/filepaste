@@ -1,4 +1,5 @@
 pub mod in_memory;
+pub mod local;
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -96,5 +97,16 @@ mod tests {
     async fn test_in_memory_consistency() {
         let storage = in_memory::InMemoryStorage::new();
         run_consistency_test_suite(storage).await;
+    }
+
+    #[tokio::test]
+    async fn test_local_consistency() {
+        let temp_dir = std::env::temp_dir().join("storage_test");
+        let storage = local::LocalStorage::new(&temp_dir).expect("Failed to create local storage");
+
+        run_consistency_test_suite(storage).await;
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(temp_dir);
     }
 }
