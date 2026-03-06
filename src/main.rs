@@ -2,6 +2,7 @@ mod args;
 mod config;
 mod endpoint;
 mod error;
+mod storage;
 
 use clap::Parser;
 use tracing::{Level, error, info};
