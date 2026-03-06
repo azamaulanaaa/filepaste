@@ -1,5 +1,6 @@
 mod args;
 mod config;
+mod endpoint;
 mod error;
 
 use clap::Parser;
@@ -8,9 +9,11 @@ use tracing_subscriber::FmtSubscriber;
 
 use crate::args::Args;
 use crate::config::AppConfig;
+use crate::endpoint::serve;
 use crate::error::AppError;
 
-fn main() -> Result<(), AppError> {
+#[tokio::main]
+async fn main() -> Result<(), AppError> {
     let subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .finish();
@@ -22,7 +25,7 @@ fn main() -> Result<(), AppError> {
     let cfg: AppConfig = confy::load("my-rust-app", None)?;
     info!("Configuration loaded: {:?}", cfg);
 
-    if let Err(e) = app(cfg) {
+    if let Err(e) = app(cfg).await {
         error!("Application crashed: {}", e);
         return Err(e);
     }
@@ -30,11 +33,8 @@ fn main() -> Result<(), AppError> {
     Ok(())
 }
 
-fn app(config: AppConfig) -> Result<(), AppError> {
-    if config.api_key == "default_key" {
-        return Err(AppError::RuntimeError(
-            "Please update your API key in the config file".into(),
-        ));
-    }
+async fn app(config: AppConfig) -> Result<(), AppError> {
+    serve(config.endpoint).await?;
+
     Ok(())
 }

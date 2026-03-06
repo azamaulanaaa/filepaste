@@ -8,6 +8,6 @@ pub enum AppError {
     #[error("IO Error: {0}")]
     IoError(#[from] std::io::Error),
 
-    #[error("An unexpected error occurred: {0}")]
-    RuntimeError(String),
+    #[error("Http Error: {0}")]
+    HttpError(#[from] actix_web::Error),
 }
