@@ -30,3 +30,12 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 [profile.dist]
 inherits = "release"
 lto = "thin"
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["async_tokio"] }
+tempfile = "3.26.0"
+
+
+[[bench]]
+name = "main"
+harness = false
