@@ -181,10 +181,12 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
 
         let nonce_stream = stream::once(async move { Ok(Bytes::from(nonce.to_vec())) });
 
+        let buffer = vec![0u8; CHUNK_SIZE];
+
         // Wrap encryptor in Some()
         let encrypt_stream = stream::unfold(
-            (content, Some(encryptor), false),
-            |(mut reader, mut encryptor_opt, is_done)| async move {
+            (content, Some(encryptor), buffer, false),
+            |(mut reader, mut encryptor_opt, mut buf, is_done)| async move {
                 if is_done {
                     return None;
                 }
@@ -192,14 +194,13 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
                 // Take the encryptor out of the option
                 let mut encryptor = encryptor_opt.take().expect("Encryptor missing");
 
-                let mut buf = vec![0u8; CHUNK_SIZE];
                 let mut total_read = 0;
 
                 while total_read < CHUNK_SIZE {
                     match reader.read(&mut buf[total_read..]).await {
                         Ok(0) => break,
                         Ok(n) => total_read += n,
-                        Err(e) => return Some((Err(e), (reader, Some(encryptor), true))),
+                        Err(e) => return Some((Err(e), (reader, Some(encryptor), buf, true))),
                     }
                 }
 
@@ -212,8 +213,10 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
 
                     match res {
                         // encryptor is consumed, return None
-                        Ok(ciphertext) => Some((Ok(Bytes::from(ciphertext)), (reader, None, true))),
-                        Err(e) => Some((Err(e), (reader, None, true))),
+                        Ok(ciphertext) => {
+                            Some((Ok(Bytes::from(ciphertext)), (reader, None, buf, true)))
+                        }
+                        Err(e) => Some((Err(e), (reader, None, buf, true))),
                     }
                 } else {
                     let res = encryptor
@@ -223,9 +226,9 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
                     match res {
                         Ok(ciphertext) => Some((
                             Ok(Bytes::from(ciphertext)),
-                            (reader, Some(encryptor), false),
+                            (reader, Some(encryptor), buf, false),
                         )),
-                        Err(e) => Some((Err(e), (reader, Some(encryptor), true))),
+                        Err(e) => Some((Err(e), (reader, Some(encryptor), buf, true))),
                     }
                 }
             },
@@ -256,10 +259,12 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
         let cipher = ChaCha20Poly1305::new(key);
         let decryptor = DecryptorBE32::from_aead(cipher, &nonce.into());
 
+        let buffer = vec![0u8; CHUNK_SIZE + TAG_SIZE];
+
         // Wrap decryptor in Some()
         let decrypt_stream = stream::unfold(
-            (reader, Some(decryptor), false),
-            |(mut reader, mut decryptor_opt, is_done)| async move {
+            (reader, Some(decryptor), buffer, false),
+            |(mut reader, mut decryptor_opt, mut buf, is_done)| async move {
                 if is_done {
                     return None;
                 }
@@ -267,17 +272,14 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
                 // Take the decryptor out of the option
                 let mut decryptor = decryptor_opt.take().expect("Decryptor missing");
 
-                let mut buf = vec![0u8; CHUNK_SIZE + TAG_SIZE];
                 let mut total_read = 0;
-
                 while total_read < buf.len() {
                     match reader.read(&mut buf[total_read..]).await {
                         Ok(0) => break,
                         Ok(n) => total_read += n,
-                        Err(e) => return Some((Err(e), (reader, Some(decryptor), true))),
+                        Err(e) => return Some((Err(e), (reader, Some(decryptor), buf, true))),
                     }
                 }
-
                 if total_read == 0 {
                     return None;
                 }
@@ -287,25 +289,27 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
                 if total_read == CHUNK_SIZE + TAG_SIZE {
                     match decryptor.decrypt_next(chunk) {
                         // decryptor is still valid, return Some(decryptor)
-                        Ok(pt) => Some((Ok(Bytes::from(pt)), (reader, Some(decryptor), false))),
+                        Ok(pt) => {
+                            Some((Ok(Bytes::from(pt)), (reader, Some(decryptor), buf, false)))
+                        }
                         Err(_) => Some((
                             Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
                                 "Decryption failure",
                             )),
-                            (reader, Some(decryptor), true),
+                            (reader, Some(decryptor), buf, true),
                         )),
                     }
                 } else {
                     match decryptor.decrypt_last(chunk) {
                         // decryptor is consumed, return None
-                        Ok(pt) => Some((Ok(Bytes::from(pt)), (reader, None, true))),
+                        Ok(pt) => Some((Ok(Bytes::from(pt)), (reader, None, buf, true))),
                         Err(_) => Some((
                             Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
                                 "Final decryption failure",
                             )),
-                            (reader, None, true),
+                            (reader, None, buf, true),
                         )),
                     }
                 }
