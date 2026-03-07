@@ -43,7 +43,8 @@ mod tests {
     #[actix_web::test]
     async fn test_unified_router() {
         let storage = InMemoryStorage::new();
-        let storage_data = web::Data::new(storage);
+        let storage_arc = Arc::new(storage);
+        let storage_data = web::Data::new(storage_arc);
 
         let app = test::init_service(
             App::new()
