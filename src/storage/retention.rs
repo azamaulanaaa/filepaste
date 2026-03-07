@@ -200,16 +200,25 @@ impl<S: StorageProvider> StorageProvider for RetentionStorage<S> {
     }
 
     async fn delete(&self, path: &Path, ctx: &Self::Context) -> io::Result<()> {
-        if let Ok(Some(mut reader)) = self.inner.get(path, &ctx.inner).await {
-            if let Ok(hdr) = RetentionHeader::decode(&mut reader).await {
-                if hdr.retain_until > SystemTime::now() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "Retention active",
-                    ));
-                }
+        if let Some(mut reader) = self.inner.get(path, &ctx.inner).await? {
+            // Attempt to decode. If it fails, we return an Error instead of skipping.
+            let hdr = RetentionHeader::decode(&mut reader).await.map_err(|e| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Retention check failed for {:?}: {}", path, e),
+                )
+            })?;
+
+            if hdr.retain_until > SystemTime::now() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Retention active",
+                ));
             }
         }
+
+        // Only delete if we successfully read the header and it was expired,
+        // or if the file didn't exist in the first place.
         self.inner.delete(path, &ctx.inner).await
     }
 

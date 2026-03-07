@@ -47,13 +47,13 @@ async fn main() -> Result<(), AppError> {
 async fn app(config: AppConfig) -> Result<(), AppError> {
     let storage = Storage::init(config.storage).await?;
 
-    let password_salt = SaltString::encode_b64(config.password_salt.as_bytes())?;
-    let encrypted_storage = EncryptedStorage::new(storage, password_salt);
-
     let retention_duration = Duration::from_hours(config.default_retention_hours);
-    let retention_storage = RetentionStorage::new(encrypted_storage, retention_duration);
+    let retention_storage = RetentionStorage::new(storage, retention_duration);
 
-    let storage_arc = Arc::new(retention_storage);
+    let password_salt = SaltString::encode_b64(config.password_salt.as_bytes())?;
+    let encrypted_storage = EncryptedStorage::new(retention_storage, password_salt);
+
+    let storage_arc = Arc::new(encrypted_storage);
 
     let gc_handle = Arc::clone(&storage_arc);
     tokio::spawn(async move {
