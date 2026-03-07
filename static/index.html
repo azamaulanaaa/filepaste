@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>Vault</title>
+    <style>
+      body, html {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        font-family: monospace;
+        overflow: hidden;
+        background: #fff;
+        color: #000;
+      }
+      #drop-zone {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+        width: 100%;
+      }
+      .center-wrap {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        min-height: 250px;
+        justify-content: center;
+        width: 100%;
+      }
+      .stat-grid {
+        display: grid;
+        grid-template-columns: auto auto 1fr;
+        gap: 0 10px;
+        text-align: left;
+        width: fit-content;
+        font-weight: normal;
+        margin: 0 auto;
+      }
+      button {
+        font-family: monospace;
+        background: transparent;
+        border: none;
+        color: #000;
+        padding: 10px 15px;
+        cursor: pointer;
+        transition: background 0.1s;
+        text-transform: lowercase;
+        font-weight: bold;
+      }
+      button:hover {
+        background: rgba(0, 0, 0, 0.05);
+      }
+      a {
+        color: #000;
+        text-decoration: underline;
+        word-break: break-all;
+        font-weight: bold;
+      }
+      .note {
+        opacity: 0.4;
+        font-size: 0.8em;
+        margin-top: 30px;
+        text-align: center;
+        font-weight: normal;
+      }
+      #staging, #ui, #out {
+        display: none;
+      }
+      .actions {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        margin-top: 20px;
+        gap: 10px;
+      }
+      input[type="password"] {
+        font-family: monospace;
+        padding: 8px;
+        text-align: center;
+        border: 1px solid #ccc;
+        outline: none;
+        margin-top: 15px;
+        width: 200px;
+      }
+      input[type="password"]:focus {
+        border-color: #000;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="drop-zone">
+      <div class="center-wrap">
+        <div id="idle" style="text-align: center">
+          drag drop file or<br>
+          <button onclick="document.getElementById('file-input').click()">
+            [ select_file ]
+          </button>
+        </div>
+
+        <div id="staging" style="text-align: center">
+          <div class="stat-grid">
+            <span>file</span><span>:</span><span id="st-fn"></span>
+            <span>size</span><span>:</span><span id="st-fs"></span>
+          </div>
+          <div>
+            <input
+              type="password"
+              id="dl-pw"
+              placeholder="auth password"
+              autocomplete="off"
+            >
+          </div>
+          <div class="actions">
+            <button onclick="startUpload()">[ start_upload ]</button>
+            <button onclick="resetUI()">[ cancel ]</button>
+          </div>
+        </div>
+
+        <div id="ui">
+          <div class="stat-grid">
+            <span>file</span><span>:</span><span id="fn"></span>
+            <span>size</span><span>:</span><span id="fs"></span>
+            <span>prog</span><span>:</span><span>[ <span id="pc">0%</span>
+              ]</span>
+          </div>
+          <div class="actions">
+            <button onclick="if(xhr) xhr.abort(); resetUI();">
+              [ abort_transfer ]
+            </button>
+          </div>
+        </div>
+
+        <div id="out">
+          <div class="stat-grid">
+            <span>link</span><span>:</span><span><a
+                id="ln"
+                target="_blank"
+              ></a></span>
+          </div>
+          <div class="actions">
+            <button onclick="copyUrl(this)">[ copy_link ]</button>
+            <button onclick="resetUI()">[ new_upload ]</button>
+          </div>
+        </div>
+
+        <div class="note">authenticated file storage</div>
+      </div>
+    </div>
+
+    <input
+      type="file"
+      id="file-input"
+      style="display: none"
+      onchange="stageFile(this.files[0])"
+    >
+
+    <script>
+      const zone = document.getElementById("drop-zone");
+      let xhr = null;
+      let pendingFile = null;
+
+      window.ondragover = (e) => {
+        e.preventDefault();
+        zone.style.background = "rgba(0,0,0,0.01)";
+      };
+      window.ondragleave = () => {
+        zone.style.background = "#fff";
+      };
+      window.ondrop = (e) => {
+        e.preventDefault();
+        zone.style.background = "#fff";
+        stageFile(e.dataTransfer.files[0]);
+      };
+
+      function stageFile(file) {
+        if (!file) return;
+        pendingFile = file;
+        document.getElementById("st-fn").textContent = file.name;
+        document.getElementById("st-fs").textContent =
+          (file.size / 1024 / 1024).toFixed(2) + " mb";
+        document.getElementById("dl-pw").value = "";
+        document.getElementById("idle").style.display = "none";
+        document.getElementById("staging").style.display = "block";
+        document.getElementById("dl-pw").focus();
+      }
+
+      function startUpload() {
+        if (!pendingFile) return;
+        const file = pendingFile;
+        const pw = document.getElementById("dl-pw").value;
+
+        document.getElementById("fn").textContent = file.name;
+        document.getElementById("fs").textContent =
+          (file.size / 1024 / 1024).toFixed(2) + " mb";
+        document.getElementById("pc").textContent = "0%";
+        document.getElementById("staging").style.display = "none";
+        document.getElementById("ui").style.display = "block";
+
+        xhr = new XMLHttpRequest();
+        // Match Actix route: PUT /{path}
+        xhr.open("PUT", "/" + encodeURIComponent(file.name), true);
+
+        // Apply Basic Auth header manually
+        if (pw) {
+          const creds = btoa("user:" + pw);
+          xhr.setRequestHeader("Authorization", "Basic " + creds);
+        }
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) {
+            document.getElementById("pc").textContent =
+              Math.round((e.loaded / e.total) * 100) + "%";
+          }
+        };
+
+        xhr.onerror = () => {
+          alert("Upload failed. Server unreachable.");
+          resetUI();
+        };
+
+        xhr.onload = () => {
+          if (xhr.status === 200) {
+            // Extract the URL returned by the server (removing the trailing \n)
+            const serverUrl = xhr.responseText.trim();
+
+            const linkEl = document.getElementById("ln");
+            linkEl.href = serverUrl;
+            linkEl.textContent = serverUrl;
+
+            document.getElementById("ui").style.display = "none";
+            document.getElementById("out").style.display = "block";
+          } else {
+            alert(
+              "Upload rejected: HTTP " + xhr.status + "\n" +
+                xhr.responseText,
+            );
+            resetUI();
+          }
+        };
+
+        xhr.send(file);
+      }
+
+      function resetUI() {
+        pendingFile = null;
+        document.getElementById("file-input").value = "";
+        document.getElementById("idle").style.display = "block";
+        document.getElementById("staging").style.display = "none";
+        document.getElementById("ui").style.display = "none";
+        document.getElementById("out").style.display = "none";
+      }
+
+      function copyUrl(btn) {
+        const link = document.getElementById("ln").href;
+        navigator.clipboard.writeText(link).then(() => {
+          const old = btn.textContent;
+          btn.textContent = "[ copied ]";
+          setTimeout(() => btn.textContent = old, 1000);
+        });
+      }
+    </script>
+  </body>
+</html>

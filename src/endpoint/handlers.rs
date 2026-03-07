@@ -8,6 +8,7 @@ use actix_web::{
     web::{self},
 };
 use futures_util::StreamExt;
+use rust_embed::Embed;
 use tokio_util::bytes::Bytes;
 use tokio_util::io::StreamReader;
 
@@ -128,6 +129,10 @@ async fn download<S: StorageProvider>(
     }
 }
 
+#[derive(Embed)]
+#[folder = "static/"]
+struct Assets;
+
 #[get("/")]
 async fn index(
     req: HttpRequest,
@@ -139,9 +144,16 @@ async fn index(
         }
     }
 
-    HttpResponse::NotFound().body("Not found")
-}
+    if let Some(content) = Assets::get("index.html") {
+        return HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            // Best practice: Add a "Bundled" header to help debugging
+            .insert_header(("X-Asset-Source", "Embedded"))
+            .body(content.data.into_owned());
+    }
 
+    HttpResponse::NotFound().body("No index.html found in config or bundle.")
+}
 pub fn configure<S>(cfg: &mut web::ServiceConfig)
 where
     S: StorageProvider + 'static,

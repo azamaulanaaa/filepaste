@@ -16,6 +16,7 @@ confy = "2.0.0"
 futures = "0.3.32"
 futures-util = "0.3.32"
 rand = { version = "0.10.0", features = ["thread_rng"] }
+rust-embed = "8.11.0"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = ["full"] }
