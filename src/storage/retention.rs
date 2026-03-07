@@ -1,6 +1,6 @@
+use std::io;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use std::{default, io};
 
 use actix_web::dev::Payload;
 use actix_web::{Error, FromRequest, HttpRequest};
@@ -94,8 +94,8 @@ pub struct RetentionContext<C> {
 }
 
 impl<C> RetentionContext<C> {
-    pub fn new(inner: C, hours: u64) -> Self {
-        let retain_until = Some(SystemTime::now() + Duration::from_hours(hours));
+    pub fn new(inner: C, hours: Option<u64>) -> Self {
+        let retain_until = hours.map(|v| SystemTime::now() + Duration::from_hours(v));
         Self {
             inner,
             retain_until,
@@ -116,17 +116,17 @@ where
         let c_future = C::from_request(req, payload);
 
         // 2. Look for the X-Retention-Hour header
-        let hours: u64 = req
+        let hours: Option<u64> = req
             .headers()
             .get("X-Retention-Hour")
             .and_then(|h| h.to_str().ok())
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(0); // Default to no retention if header is missing or invalid
+            .and_then(|s| s.parse().ok());
 
         Box::pin(async move {
             let c_instance = c_future.await.map_err(|e| e.into())?;
 
             // Create the context with the calculated SystemTime
+
             Ok(RetentionContext::new(c_instance, hours))
         })
     }

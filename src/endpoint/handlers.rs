@@ -1,5 +1,6 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 
 use actix_files::NamedFile;
 use actix_web::HttpRequest;
@@ -75,7 +76,7 @@ async fn upload<S: StorageProvider>(
     req: HttpRequest,
     path: web::Path<String>,
     payload: web::Payload,
-    storage: web::Data<S>,
+    storage: web::Data<Arc<S>>,
     ctx: S::Context,
 ) -> impl Responder {
     let raw_path = path.into_inner();
@@ -106,7 +107,7 @@ async fn upload<S: StorageProvider>(
 
 async fn download<S: StorageProvider>(
     path: web::Path<String>,
-    storage: web::Data<S>,
+    storage: web::Data<Arc<S>>,
     ctx: S::Context,
 ) -> impl Responder {
     let raw_path = path.into_inner();

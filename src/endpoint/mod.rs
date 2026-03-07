@@ -1,12 +1,17 @@
 pub mod config;
 pub mod handlers;
 
+use std::sync::Arc;
+
 use actix_web::{App, HttpServer, web};
 use tracing_actix_web::TracingLogger;
 
 use crate::storage::StorageProvider;
 
-pub async fn serve<S>(config: config::EndpointConfig, storage: S) -> Result<(), actix_web::Error>
+pub async fn serve<S>(
+    config: config::EndpointConfig,
+    storage: Arc<S>,
+) -> Result<(), actix_web::Error>
 where
     S: StorageProvider + 'static,
 {
