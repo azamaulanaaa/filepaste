@@ -181,6 +181,7 @@ mod tests {
 
     use std::io::Cursor;
 
+    use argon2::password_hash::SaltString;
     use tokio::io::AsyncReadExt;
 
     async fn run_consistency_test_suite<S: StorageProvider>(storage: S, ctx: &S::Context) {
@@ -270,7 +271,9 @@ mod tests {
     #[tokio::test]
     async fn test_encryption_consistency() {
         let inner_storage = in_memory::InMemoryStorage::new();
-        let storage = encryption::EncryptedStorage::new(inner_storage);
+        let password_salt =
+            SaltString::encode_b64("randomsalty".as_bytes()).expect("Failed to generate salt key");
+        let storage = encryption::EncryptedStorage::new(inner_storage, password_salt);
         let context = encryption::EncryptedContext::<in_memory::InMemoryContext>::default();
 
         run_consistency_test_suite(storage, &context).await;

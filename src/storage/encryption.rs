@@ -1,6 +1,10 @@
 use std::io;
 use std::path::Path;
 
+use argon2::{
+    Argon2,
+    password_hash::{PasswordHasher, SaltString},
+};
 use async_trait::async_trait;
 use chacha20poly1305::{
     ChaCha20Poly1305, Key, KeyInit,
@@ -19,16 +23,57 @@ pub const NONCE_SIZE: usize = 7; // ChaCha20 stream nonce
 #[derive(Clone, Default)]
 pub struct EncryptedContext<C> {
     pub inner: C,
-    pub key: [u8; 32],
+    pub password: String,
+}
+
+impl<C> EncryptedContext<C> {
+    /// Creates a new context storing the plaintext password.
+    pub fn new(inner: C, password: impl Into<String>) -> Self {
+        Self {
+            inner,
+            password: password.into(),
+        }
+    }
 }
 
 pub struct EncryptedStorage<S: StorageProvider> {
     inner: S,
+    salt: SaltString,
 }
 
 impl<S: StorageProvider> EncryptedStorage<S> {
-    pub fn new(inner: S) -> Self {
-        Self { inner }
+    pub fn new(inner: S, salt: SaltString) -> Self {
+        Self { inner, salt }
+    }
+
+    /// Derives the 32-byte key using the context's password and the storage's salt.
+    /// Note: This is computationally expensive and will run on every read/write.
+    fn derive_key(&self, password: &str) -> io::Result<[u8; 32]> {
+        let argon2 = Argon2::default();
+
+        let password_hash = argon2
+            .hash_password(password.as_bytes(), &self.salt)
+            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Hash error: {}", e)))?;
+
+        let hash = password_hash.hash.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Key derivation failed: empty hash",
+            )
+        })?;
+
+        let hash_bytes = hash.as_bytes();
+        if hash_bytes.len() < 32 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Derived key too short",
+            ));
+        }
+
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&hash_bytes[..32]);
+
+        Ok(key)
     }
 
     /// Mathematically reconstructs the original plaintext size from the encrypted size.
@@ -67,10 +112,13 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
         content: AsyncFileReader,
         ctx: &Self::Context,
     ) -> io::Result<u64> {
+        // Derive key on the fly
+        let derived_key = self.derive_key(&ctx.password)?;
+
         let mut nonce = [0u8; NONCE_SIZE];
         rand::fill(&mut nonce);
 
-        let key = Key::from_slice(&ctx.key);
+        let key = Key::from_slice(&derived_key);
         let cipher = ChaCha20Poly1305::new(key);
         let encryptor = EncryptorBE32::from_aead(cipher, &nonce.into());
 
@@ -141,10 +189,13 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
             None => return Ok(None),
         };
 
+        // Derive key on the fly
+        let derived_key = self.derive_key(&ctx.password)?;
+
         let mut nonce = [0u8; NONCE_SIZE];
         reader.read_exact(&mut nonce).await?;
 
-        let key = Key::from_slice(&ctx.key);
+        let key = Key::from_slice(&derived_key);
         let cipher = ChaCha20Poly1305::new(key);
         let decryptor = DecryptorBE32::from_aead(cipher, &nonce.into());
 
@@ -223,6 +274,7 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
 
         Ok(meta_opt)
     }
+
     async fn list(&self, path: &Path, ctx: &Self::Context) -> io::Result<Vec<Resource>> {
         let mut resources = self.inner.list(path, &ctx.inner).await?;
 
