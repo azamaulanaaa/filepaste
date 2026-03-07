@@ -18,7 +18,7 @@ where
             .app_data(storage_data.clone())
             .configure(handlers::configure::<S>)
     })
-    .bind(("0.0.0.0", config.port))?
+    .bind((config.host, config.port))?
     .run()
     .await?;
 
