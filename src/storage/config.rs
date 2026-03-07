@@ -1,15 +1,18 @@
-use std::path::PathBuf;
-
 use serde::{Deserialize, Serialize};
-
+use std::path::PathBuf;
 #[derive(Serialize, Deserialize, Debug)]
-pub struct StorageConfig {
-    pub root: PathBuf,
+#[serde(tag = "type", rename_all = "lowercase")]
+pub enum StorageConfig {
+    Local {
+        root: PathBuf,
+    },
+    #[cfg(test)]
+    InMemory,
 }
 
 impl Default for StorageConfig {
     fn default() -> Self {
-        Self {
+        Self::Local {
             root: "./data".into(),
         }
     }

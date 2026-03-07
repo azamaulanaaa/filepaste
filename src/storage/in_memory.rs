@@ -5,10 +5,11 @@ use std::sync::RwLock;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 
-use super::{AsyncFileReader, DirMetadata, FileMetadata, FileStorage, Resource};
+use super::{AsyncFileReader, DirMetadata, FileMetadata, Resource, StorageProvider};
 
-#[derive(Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct InMemoryContext {}
 
 pub struct InMemoryStorage {
@@ -24,7 +25,7 @@ impl InMemoryStorage {
 }
 
 #[async_trait]
-impl FileStorage for InMemoryStorage {
+impl StorageProvider for InMemoryStorage {
     type Context = InMemoryContext;
 
     async fn put(

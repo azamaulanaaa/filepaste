@@ -9,6 +9,7 @@ use std::pin::Pin;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncRead;
 
 pub type AsyncFileReader = Pin<Box<dyn AsyncRead + Send>>;
@@ -46,7 +47,7 @@ impl Resource {
 }
 
 #[async_trait]
-pub trait FileStorage: Send + Sync {
+pub trait StorageProvider: Send + Sync {
     type Context: Default + Send + Sync + Clone;
 
     async fn put(
@@ -61,6 +62,118 @@ pub trait FileStorage: Send + Sync {
     async fn list(&self, path: &Path, ctx: &Self::Context) -> io::Result<Vec<Resource>>;
 }
 
+macro_rules! register_storage_system {
+    ($($(#[$meta:meta])* $variant:ident => $storage_ty:ty),* $(,)?) => {
+
+        pub enum Storage {
+            $(
+                $(#[$meta])*
+                $variant($storage_ty)
+            ),*
+        }
+
+        #[derive(Serialize, Deserialize, Clone, Debug)]
+        #[serde(tag = "type", rename_all = "lowercase")]
+        pub enum Context {
+            $(
+                $(#[$meta])*
+                $variant( <$storage_ty as StorageProvider>::Context )
+            ),*
+        }
+
+        impl Default for Context {
+            fn default() -> Self {
+                $(
+                    $(#[$meta])*
+                    #[allow(unreachable_code)]
+                    return Self::$variant(Default::default());
+                )*
+                unreachable!("No storage variants available for the current build configuration");
+            }
+        }
+
+        #[async_trait]
+        impl StorageProvider for Storage {
+            type Context = Context;
+
+            async fn put(&self, path: &Path, content: AsyncFileReader, ctx: &Self::Context) -> io::Result<u64> {
+                match (self, ctx) {
+                    $(
+                        $(#[$meta])*
+                        (Self::$variant(s), Context::$variant(c)) => s.put(path, content, c).await,
+                    )*
+                    _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Storage and Context variant mismatch")),
+                }
+            }
+
+            async fn get(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<AsyncFileReader>> {
+                match (self, ctx) {
+                    $(
+                        $(#[$meta])*
+                        (Self::$variant(s), Context::$variant(c)) => s.get(path, c).await,
+                    )*
+                    _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Storage and Context variant mismatch")),
+                }
+            }
+
+            async fn delete(&self, path: &Path, ctx: &Self::Context) -> io::Result<()> {
+                match (self, ctx) {
+                    $(
+                        $(#[$meta])*
+                        (Self::$variant(s), Context::$variant(c)) => s.delete(path, c).await,
+                    )*
+                    _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Storage and Context variant mismatch")),
+                }
+            }
+
+            async fn metadata(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<FileMetadata>> {
+                match (self, ctx) {
+                    $(
+                        $(#[$meta])*
+                        (Self::$variant(s), Context::$variant(c)) => s.metadata(path, c).await,
+                    )*
+                    _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Storage and Context variant mismatch")),
+                }
+            }
+
+            async fn list(&self, path: &Path, ctx: &Self::Context) -> io::Result<Vec<Resource>> {
+                match (self, ctx) {
+                    $(
+                        $(#[$meta])*
+                        (Self::$variant(s), Context::$variant(c)) => s.list(path, c).await,
+                    )*
+                    _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Storage and Context variant mismatch")),
+                }
+            }
+        }
+
+        $(
+            $(#[$meta])*
+            impl From<<$storage_ty as StorageProvider>::Context> for Context {
+                fn from(ctx: <$storage_ty as StorageProvider>::Context) -> Self {
+                    Self::$variant(ctx)
+                }
+            }
+        )*
+    };
+}
+
+register_storage_system! {
+    Local => local::LocalStorage,
+    #[cfg(test)]
+    InMemory => in_memory::InMemoryStorage,
+}
+
+impl Storage {
+    pub async fn init(cfg: config::StorageConfig) -> io::Result<Self> {
+        Ok(match cfg {
+            config::StorageConfig::Local { root } => Self::Local(local::LocalStorage::new(root)?),
+            #[cfg(test)]
+            config::StorageConfig::InMemory => Self::InMemory(in_memory::InMemoryStorage::new()),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,7 +182,7 @@ mod tests {
 
     use tokio::io::AsyncReadExt;
 
-    async fn run_consistency_test_suite<S: FileStorage>(storage: S, ctx: &S::Context) {
+    async fn run_consistency_test_suite<S: StorageProvider>(storage: S, ctx: &S::Context) {
         let path = Path::new("consistency_test.txt");
         let content = b"universal data".to_vec();
 
@@ -141,5 +254,15 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(temp_dir);
+    }
+
+    #[tokio::test]
+    async fn test_storage_enum_consistency() {
+        let storage_enum = Storage::init(config::StorageConfig::InMemory)
+            .await
+            .expect("Failed to create in memory storage");
+        let context_enum = Context::InMemory(in_memory::InMemoryContext::default());
+
+        run_consistency_test_suite(storage_enum, &context_enum).await;
     }
 }

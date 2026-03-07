@@ -4,11 +4,11 @@ pub mod handlers;
 use actix_web::{App, HttpServer, web};
 use tracing_actix_web::TracingLogger;
 
-use crate::storage::FileStorage;
+use crate::storage::StorageProvider;
 
 pub async fn serve<S>(config: config::EndpointConfig, storage: S) -> Result<(), actix_web::Error>
 where
-    S: FileStorage + 'static,
+    S: StorageProvider + 'static,
 {
     let storage_data = web::Data::new(storage);
 

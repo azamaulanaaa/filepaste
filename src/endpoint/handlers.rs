@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use tokio_util::bytes::Bytes;
 use tokio_util::io::StreamReader;
 
-use crate::storage::{AsyncFileReader, FileStorage};
+use crate::storage::{AsyncFileReader, StorageProvider};
 
 // Helper to convert Actix Payload into your AsyncFileReader (Pin<Box<dyn AsyncRead>>)
 fn payload_to_reader(mut payload: web::Payload) -> AsyncFileReader {
@@ -65,7 +65,7 @@ fn sanitize_relative_path(user_path: &str) -> Result<PathBuf, &'static str> {
     Ok(resolved_path)
 }
 
-async fn upload<S: FileStorage>(
+async fn upload<S: StorageProvider>(
     path: web::Path<String>,
     payload: web::Payload,
     storage: web::Data<S>,
@@ -88,7 +88,7 @@ async fn upload<S: FileStorage>(
     }
 }
 
-async fn download<S: FileStorage>(
+async fn download<S: StorageProvider>(
     path: web::Path<String>,
     storage: web::Data<S>,
 ) -> impl Responder {
@@ -117,7 +117,7 @@ async fn download<S: FileStorage>(
 
 pub fn configure<S>(cfg: &mut web::ServiceConfig)
 where
-    S: FileStorage + 'static,
+    S: StorageProvider + 'static,
     S::Context: Send + Sync + Default,
 {
     cfg.service(

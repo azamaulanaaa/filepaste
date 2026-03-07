@@ -2,11 +2,12 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
+use serde::{Deserialize, Serialize};
 use tokio::fs::{self, File};
 
-use super::{AsyncFileReader, DirMetadata, FileMetadata, FileStorage, Resource};
+use super::{AsyncFileReader, DirMetadata, FileMetadata, Resource, StorageProvider};
 
-#[derive(Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct LocalContext {}
 
 pub struct LocalStorage {
@@ -14,12 +15,12 @@ pub struct LocalStorage {
 }
 
 impl LocalStorage {
-    pub fn new(config: super::config::StorageConfig) -> io::Result<Self> {
-        // Ensure the root directory exists
-        if !config.root.exists() {
-            std::fs::create_dir_all(&config.root)?;
+    pub fn new<P: AsRef<Path>>(root: P) -> io::Result<Self> {
+        let root = root.as_ref().to_path_buf();
+        if !root.exists() {
+            std::fs::create_dir_all(&root)?;
         }
-        Ok(Self { root: config.root })
+        Ok(Self { root })
     }
 
     /// Helper to join the root with the relative path provided by the trait
@@ -50,7 +51,7 @@ impl LocalStorage {
 }
 
 #[async_trait]
-impl FileStorage for LocalStorage {
+impl StorageProvider for LocalStorage {
     type Context = LocalContext;
 
     async fn put(
