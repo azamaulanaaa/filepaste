@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 pub struct EndpointConfig {
     pub host: String,
     pub port: u16,
+    pub index_path: Option<String>,
 }
 
 impl Default for EndpointConfig {
@@ -11,6 +12,7 @@ impl Default for EndpointConfig {
         Self {
             host: "0.0.0.0".to_string(),
             port: 3000,
+            index_path: None,
         }
     }
 }

@@ -10,11 +10,13 @@ pub async fn serve<S>(config: config::EndpointConfig, storage: S) -> Result<(), 
 where
     S: StorageProvider + 'static,
 {
+    let config_data = web::Data::new(config.clone());
     let storage_data = web::Data::new(storage);
 
     HttpServer::new(move || {
         App::new()
             .wrap(TracingLogger::default())
+            .app_data(config_data.clone())
             .app_data(storage_data.clone())
             .configure(handlers::configure::<S>)
     })

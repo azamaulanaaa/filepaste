@@ -1,7 +1,12 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use actix_web::{FromRequest, HttpResponse, Responder, web};
+use actix_files::NamedFile;
+use actix_web::HttpRequest;
+use actix_web::{
+    FromRequest, HttpResponse, Responder, get,
+    web::{self},
+};
 use futures_util::StreamExt;
 use tokio_util::bytes::Bytes;
 use tokio_util::io::StreamReader;
@@ -66,6 +71,7 @@ fn sanitize_relative_path(user_path: &str) -> Result<PathBuf, &'static str> {
 }
 
 async fn upload<S: StorageProvider>(
+    req: HttpRequest,
     path: web::Path<String>,
     payload: web::Payload,
     storage: web::Data<S>,
@@ -111,12 +117,26 @@ async fn download<S: StorageProvider>(
     }
 }
 
+#[get("/")]
+async fn index(
+    req: HttpRequest,
+    config: web::Data<super::config::EndpointConfig>,
+) -> impl Responder {
+    if let Some(path) = &config.index_path {
+        if let Ok(file) = NamedFile::open_async(path).await {
+            return file.into_response(&req);
+        }
+    }
+
+    HttpResponse::NotFound().body("Not found")
+}
+
 pub fn configure<S>(cfg: &mut web::ServiceConfig)
 where
     S: StorageProvider + 'static,
     S::Context: Send + Sync + Default + FromRequest,
 {
-    cfg.service(
+    cfg.service(index).service(
         web::resource("/{path:.*}")
             .route(web::put().to(upload::<S>))
             .route(web::get().to(download::<S>)),

@@ -5,6 +5,7 @@ edition = "2024"
 repository = "https://github.com/azamaulanaaa/filepaste.git"
 
 [dependencies]
+actix-files = "0.6.10"
 actix-web = "4.13.0"
 actix-web-httpauth = "0.8.2"
 argon2 = { version = "0.5.3", features = ["std"] }
