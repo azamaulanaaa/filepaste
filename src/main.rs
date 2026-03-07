@@ -1,9 +1,3 @@
-mod args;
-mod config;
-mod endpoint;
-mod error;
-mod storage;
-
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,11 +7,11 @@ use clap::Parser;
 use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
-use crate::args::Args;
-use crate::config::AppConfig;
-use crate::endpoint::serve;
-use crate::error::AppError;
-use crate::storage::{
+use filepaste::args::Args;
+use filepaste::config::AppConfig;
+use filepaste::endpoint::serve;
+use filepaste::error::AppError;
+use filepaste::storage::{
     Storage, StoragePrune, encryption::EncryptedStorage, retention::RetentionStorage,
 };
 
