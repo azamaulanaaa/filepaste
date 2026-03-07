@@ -1,4 +1,5 @@
 pub mod config;
+pub mod encryption;
 #[cfg(test)]
 pub mod in_memory;
 pub mod local;
@@ -264,5 +265,14 @@ mod tests {
         let context_enum = Context::InMemory(in_memory::InMemoryContext::default());
 
         run_consistency_test_suite(storage_enum, &context_enum).await;
+    }
+
+    #[tokio::test]
+    async fn test_encryption_consistency() {
+        let inner_storage = in_memory::InMemoryStorage::new();
+        let storage = encryption::EncryptedStorage::new(inner_storage);
+        let context = encryption::EncryptedContext::<in_memory::InMemoryContext>::default();
+
+        run_consistency_test_suite(storage, &context).await;
     }
 }
