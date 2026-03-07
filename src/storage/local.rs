@@ -14,13 +14,12 @@ pub struct LocalStorage {
 }
 
 impl LocalStorage {
-    pub fn new<P: AsRef<Path>>(root: P) -> io::Result<Self> {
-        let root = root.as_ref().to_path_buf();
+    pub fn new(config: super::config::StorageConfig) -> io::Result<Self> {
         // Ensure the root directory exists
-        if !root.exists() {
-            std::fs::create_dir_all(&root)?;
+        if !config.root.exists() {
+            std::fs::create_dir_all(&config.root)?;
         }
-        Ok(Self { root })
+        Ok(Self { root: config.root })
     }
 
     /// Helper to join the root with the relative path provided by the trait
