@@ -1,7 +1,7 @@
 use std::io;
 use std::path::Path;
 
-use actix_web::{Error, FromRequest, HttpRequest, dev::Payload, error};
+use actix_web::{Error, FromRequest, HttpRequest, HttpResponse, dev::Payload, error, http::header};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use argon2::{
     Argon2,
@@ -51,6 +51,9 @@ where
         // Clone the request for the async block
         let req_clone = req.clone();
 
+        // Capture the path to create a unique Auth Realm for this specific URL
+        let path = req.path().to_string();
+
         // 1. Trigger the extraction of `C` *outside* the async block
         // This avoids borrowing issues with `&mut Payload` inside the static future.
         let c_future = C::from_request(req, payload);
@@ -60,9 +63,25 @@ where
             let c_instance = c_future.await.map_err(|e| e.into())?; // Convert C's error into a standard Actix error
 
             // 3. Extract Basic Auth as normal
-            let auth = BasicAuth::extract(&req_clone)
-                .await
-                .map_err(|_| error::ErrorUnauthorized("Missing Credentials"))?;
+            let auth = match BasicAuth::extract(&req_clone).await {
+                Ok(auth) => auth,
+                Err(_) => {
+                    let realm = format!("Basic realm=\"Access to {}\"", path);
+
+                    return Err(error::InternalError::from_response(
+                        "Unauthorized",
+                        HttpResponse::Unauthorized()
+                            .insert_header((header::WWW_AUTHENTICATE, realm))
+                            .insert_header((
+                                header::CACHE_CONTROL,
+                                "no-store, no-cache, must-revalidate",
+                            ))
+                            .insert_header((header::PRAGMA, "no-cache"))
+                            .finish(),
+                    )
+                    .into());
+                }
+            };
 
             let password = auth.password().unwrap_or("").to_string();
 
