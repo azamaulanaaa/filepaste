@@ -3,6 +3,7 @@ pub mod encryption;
 #[cfg(test)]
 pub mod in_memory;
 pub mod local;
+pub mod retention;
 
 use std::future::{Ready, ready};
 use std::io;
@@ -190,7 +191,7 @@ impl Storage {
 mod tests {
     use super::*;
 
-    use std::io::Cursor;
+    use std::{io::Cursor, time::Duration};
 
     use argon2::password_hash::SaltString;
     use tokio::io::AsyncReadExt;
@@ -286,6 +287,15 @@ mod tests {
             SaltString::encode_b64("randomsalty".as_bytes()).expect("Failed to generate salt key");
         let storage = encryption::EncryptedStorage::new(inner_storage, password_salt);
         let context = encryption::EncryptedContext::<in_memory::InMemoryContext>::default();
+
+        run_consistency_test_suite(storage, &context).await;
+    }
+
+    #[tokio::test]
+    async fn test_retention_consistency() {
+        let inner_storage = in_memory::InMemoryStorage::new();
+        let storage = retention::RetentionStorage::new(inner_storage, Duration::from_hours(0));
+        let context = retention::RetentionContext::<in_memory::InMemoryContext>::default();
 
         run_consistency_test_suite(storage, &context).await;
     }
