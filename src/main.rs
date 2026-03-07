@@ -57,7 +57,7 @@ async fn app(config: AppConfig) -> Result<(), AppError> {
 
     let gc_handle = Arc::clone(&storage_arc);
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_hours(24));
+        let mut interval = tokio::time::interval(Duration::from_hours(1));
 
         loop {
             info!("GC: Starting hourly prune...");
