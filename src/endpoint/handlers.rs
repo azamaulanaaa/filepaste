@@ -117,12 +117,19 @@ async fn download<S: StorageProvider>(
         Err(e) => return HttpResponse::BadRequest().body(e),
     };
 
+    let metadata = match storage.metadata(&safe_path, &ctx).await {
+        Ok(Some(metadata)) => metadata,
+        Ok(None) => return HttpResponse::NotFound().body("File not found\n"),
+        Err(e) => return HttpResponse::InternalServerError().body(e.to_string()),
+    };
+
     match storage.get(&safe_path, &ctx).await {
         Ok(Some(reader)) => {
             // We turn the AsyncRead back into a stream for Actix
             let stream = tokio_util::io::ReaderStream::new(reader);
             HttpResponse::Ok()
                 .content_type("application/octet-stream")
+                .insert_header(("Content-Length", metadata.size))
                 .streaming(stream)
         }
         Ok(None) => HttpResponse::NotFound().body("File not found\n"),
