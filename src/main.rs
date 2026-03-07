@@ -1,9 +1,9 @@
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use argon2::password_hash::SaltString;
 use clap::Parser;
+use filepaste::gc::spawn_gc;
 use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -11,9 +11,7 @@ use filepaste::args::Args;
 use filepaste::config::AppConfig;
 use filepaste::endpoint::serve;
 use filepaste::error::AppError;
-use filepaste::storage::{
-    Storage, StoragePrune, encryption::EncryptedStorage, retention::RetentionStorage,
-};
+use filepaste::storage::{Storage, encryption::EncryptedStorage, retention::RetentionStorage};
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
@@ -49,18 +47,7 @@ async fn app(config: AppConfig) -> Result<(), AppError> {
 
     let storage_arc = Arc::new(encrypted_storage);
 
-    let gc_handle = Arc::clone(&storage_arc);
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_hours(1));
-
-        loop {
-            interval.tick().await;
-            info!("GC: Starting hourly prune...");
-            // .prune() is available here because of the blanket implementation
-            let _ = gc_handle.prune(Path::new(""), &Default::default()).await;
-        }
-    });
-
+    spawn_gc(storage_arc.clone(), Duration::from_hours(1));
     serve(config.endpoint, storage_arc).await?;
 
     Ok(())

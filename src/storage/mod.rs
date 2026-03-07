@@ -66,34 +66,6 @@ pub trait StorageProvider: Send + Sync {
     async fn list(&self, path: &Path, ctx: &Self::Context) -> io::Result<Vec<Resource>>;
 }
 
-#[async_trait]
-pub trait StoragePrune: StorageProvider {
-    /// Recursively walks the storage and attempts to delete everything.
-    /// Relies on the underlying delete() implementation to enforce logic.
-    async fn prune(&self, path: &Path, ctx: &Self::Context) -> io::Result<()> {
-        let items = self.list(path, ctx).await?;
-
-        for item in items {
-            match item {
-                Resource::File { path, .. } => match self.delete(&path, ctx).await {
-                    Ok(_) => tracing::info!("Pruned: {:?}", path),
-                    Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
-                        tracing::debug!("Skipping locked resource: {:?}", path);
-                    }
-                    Err(e) => tracing::error!("Prune failed for {:?}: {}", path, e),
-                },
-                Resource::Directory { path, .. } => {
-                    // Tail-call recursion for directories
-                    Box::pin(self.prune(&path, ctx)).await?;
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-impl<T: StorageProvider> StoragePrune for T {}
-
 macro_rules! register_storage_system {
     ($($(#[$meta:meta])* $variant:ident => $storage_ty:ty),* $(,)?) => {
 
