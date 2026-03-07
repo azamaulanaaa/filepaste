@@ -6,6 +6,9 @@ use tokio::fs::{self, File};
 
 use super::{AsyncFileReader, DirMetadata, FileMetadata, FileStorage, Resource};
 
+#[derive(Default, Clone)]
+pub struct LocalContext {}
+
 pub struct LocalStorage {
     root: PathBuf,
 }
@@ -49,7 +52,14 @@ impl LocalStorage {
 
 #[async_trait]
 impl FileStorage for LocalStorage {
-    async fn put(&self, path: &Path, mut content: AsyncFileReader) -> io::Result<u64> {
+    type Context = LocalContext;
+
+    async fn put(
+        &self,
+        path: &Path,
+        mut content: AsyncFileReader,
+        _ctx: &Self::Context,
+    ) -> io::Result<u64> {
         let full_path = self.full_path(path);
 
         if full_path.is_dir() {
@@ -76,7 +86,7 @@ impl FileStorage for LocalStorage {
         Ok(bytes_written)
     }
 
-    async fn get(&self, path: &Path) -> io::Result<Option<AsyncFileReader>> {
+    async fn get(&self, path: &Path, _ctx: &Self::Context) -> io::Result<Option<AsyncFileReader>> {
         let full_path = self.full_path(path);
 
         match File::open(full_path).await {
@@ -86,7 +96,7 @@ impl FileStorage for LocalStorage {
         }
     }
 
-    async fn delete(&self, path: &Path) -> io::Result<()> {
+    async fn delete(&self, path: &Path, _ctx: &Self::Context) -> io::Result<()> {
         let full_path = self.full_path(path);
 
         // 1. REJECT manual directory deletion
@@ -110,7 +120,11 @@ impl FileStorage for LocalStorage {
         Ok(())
     }
 
-    async fn metadata(&self, path: &Path) -> io::Result<Option<FileMetadata>> {
+    async fn metadata(
+        &self,
+        path: &Path,
+        _ctx: &Self::Context,
+    ) -> io::Result<Option<FileMetadata>> {
         let full_path = self.full_path(path);
         match fs::metadata(full_path).await {
             Ok(meta) => Ok(Some(FileMetadata {
@@ -122,7 +136,7 @@ impl FileStorage for LocalStorage {
         }
     }
 
-    async fn list(&self, path: &Path) -> io::Result<Vec<Resource>> {
+    async fn list(&self, path: &Path, _ctx: &Self::Context) -> io::Result<Vec<Resource>> {
         let full_path = self.full_path(path);
         let mut entries = fs::read_dir(full_path).await?;
         let mut resources = Vec::new();

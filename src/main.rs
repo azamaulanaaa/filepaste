@@ -12,6 +12,7 @@ use crate::args::Args;
 use crate::config::AppConfig;
 use crate::endpoint::serve;
 use crate::error::AppError;
+use crate::storage::in_memory;
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
@@ -37,7 +38,8 @@ async fn main() -> Result<(), AppError> {
 }
 
 async fn app(config: AppConfig) -> Result<(), AppError> {
-    serve(config.endpoint).await?;
+    let storage = in_memory::InMemoryStorage::new();
+    serve(config.endpoint, storage).await?;
 
     Ok(())
 }

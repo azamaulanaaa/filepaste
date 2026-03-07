@@ -1,7 +1,7 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use actix_web::{HttpResponse, Responder, get, put, web};
+use actix_web::{HttpResponse, Responder, web};
 use futures_util::StreamExt;
 use tokio_util::bytes::Bytes;
 use tokio_util::io::StreamReader;
@@ -65,11 +65,10 @@ fn sanitize_relative_path(user_path: &str) -> Result<PathBuf, &'static str> {
     Ok(resolved_path)
 }
 
-#[put("/{file_path:.*}")]
-async fn upload(
+async fn upload<S: FileStorage>(
     path: web::Path<String>,
     payload: web::Payload,
-    storage: web::Data<dyn FileStorage>,
+    storage: web::Data<S>,
 ) -> impl Responder {
     let raw_path = path.into_inner();
 
@@ -81,14 +80,18 @@ async fn upload(
 
     let reader = payload_to_reader(payload);
 
-    match storage.put(&safe_path, reader).await {
+    let ctx = S::Context::default();
+
+    match storage.put(&safe_path, reader, &ctx).await {
         Ok(size) => HttpResponse::Ok().body(format!("Upload successful. Size: {} bytes\n", size)),
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
 }
 
-#[get("/{file_path:.*}")]
-async fn download(path: web::Path<String>, storage: web::Data<dyn FileStorage>) -> impl Responder {
+async fn download<S: FileStorage>(
+    path: web::Path<String>,
+    storage: web::Data<S>,
+) -> impl Responder {
     let raw_path = path.into_inner();
 
     // 1. Sanitize the path
@@ -97,7 +100,9 @@ async fn download(path: web::Path<String>, storage: web::Data<dyn FileStorage>) 
         Err(e) => return HttpResponse::BadRequest().body(e),
     };
 
-    match storage.get(&safe_path).await {
+    let ctx = S::Context::default();
+
+    match storage.get(&safe_path, &ctx).await {
         Ok(Some(reader)) => {
             // We turn the AsyncRead back into a stream for Actix
             let stream = tokio_util::io::ReaderStream::new(reader);
@@ -108,4 +113,16 @@ async fn download(path: web::Path<String>, storage: web::Data<dyn FileStorage>) 
         Ok(None) => HttpResponse::NotFound().body("File not found\n"),
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
+}
+
+pub fn configure<S>(cfg: &mut web::ServiceConfig)
+where
+    S: FileStorage + 'static,
+    S::Context: Send + Sync + Default,
+{
+    cfg.service(
+        web::resource("/{path:.*}")
+            .route(web::put().to(upload::<S>))
+            .route(web::get().to(download::<S>)),
+    );
 }

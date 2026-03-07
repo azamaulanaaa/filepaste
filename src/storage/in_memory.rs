@@ -8,6 +8,9 @@ use async_trait::async_trait;
 
 use super::{AsyncFileReader, DirMetadata, FileMetadata, FileStorage, Resource};
 
+#[derive(Default, Clone)]
+pub struct InMemoryContext {}
+
 pub struct InMemoryStorage {
     data: RwLock<BTreeMap<PathBuf, (Vec<u8>, SystemTime)>>,
 }
@@ -22,7 +25,14 @@ impl InMemoryStorage {
 
 #[async_trait]
 impl FileStorage for InMemoryStorage {
-    async fn put(&self, path: &Path, mut content: AsyncFileReader) -> io::Result<u64> {
+    type Context = InMemoryContext;
+
+    async fn put(
+        &self,
+        path: &Path,
+        mut content: AsyncFileReader,
+        _ctx: &Self::Context,
+    ) -> io::Result<u64> {
         let mut buffer = Vec::new();
         // Drain the reader into our local buffer
         let bytes_written = tokio::io::copy(&mut content, &mut buffer).await?;
@@ -33,7 +43,7 @@ impl FileStorage for InMemoryStorage {
         Ok(bytes_written)
     }
 
-    async fn get(&self, path: &Path) -> io::Result<Option<AsyncFileReader>> {
+    async fn get(&self, path: &Path, _ctx: &Self::Context) -> io::Result<Option<AsyncFileReader>> {
         let map = self.data.read().unwrap();
 
         if let Some((bytes, _)) = map.get(path) {
@@ -46,13 +56,17 @@ impl FileStorage for InMemoryStorage {
         Ok(None)
     }
 
-    async fn delete(&self, path: &Path) -> io::Result<()> {
+    async fn delete(&self, path: &Path, _ctx: &Self::Context) -> io::Result<()> {
         let mut map = self.data.write().unwrap();
         map.remove(path);
         Ok(())
     }
 
-    async fn metadata(&self, path: &Path) -> io::Result<Option<FileMetadata>> {
+    async fn metadata(
+        &self,
+        path: &Path,
+        _ctx: &Self::Context,
+    ) -> io::Result<Option<FileMetadata>> {
         let map = self.data.read().unwrap();
         Ok(map.get(path).map(|(bytes, modified)| FileMetadata {
             size: bytes.len() as u64,
@@ -60,7 +74,7 @@ impl FileStorage for InMemoryStorage {
         }))
     }
 
-    async fn list(&self, prefix: &Path) -> io::Result<Vec<Resource>> {
+    async fn list(&self, prefix: &Path, _ctx: &Self::Context) -> io::Result<Vec<Resource>> {
         let map = self.data.read().unwrap();
         let mut files = Vec::new();
         let mut dirs: HashMap<PathBuf, SystemTime> = HashMap::new();
