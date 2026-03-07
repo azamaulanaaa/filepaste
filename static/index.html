@@ -74,17 +74,39 @@
         margin-top: 20px;
         gap: 10px;
       }
-      input[type="password"] {
+      input[type="password"],
+      select {
         font-family: monospace;
         padding: 8px;
-        text-align: center;
         border: 1px solid #ccc;
         outline: none;
-        margin-top: 15px;
-        width: 200px;
+        width: 240px; /* Fixed width for both */
+        box-sizing: border-box; /* Ensures padding doesn't add to width */
+        background: #fff;
+        color: #000;
+        height: 35px; /* Fixed height for both */
+        margin: 5px 0;
       }
-      input[type="password"]:focus {
+
+      select {
+        cursor: pointer;
+        -webkit-appearance: none; /* Removes default browser styling if desired */
+        -moz-appearance: none;
+        appearance: none;
+        text-align-last: center; /* Centers text in dropdown */
+        border-radius: 0; /* Square edges to match minimalist look */
+      }
+
+      input[type="password"]:focus,
+      select:focus {
         border-color: #000;
+      }
+
+      .input-group {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        margin-top: 15px;
       }
     </style>
   </head>
@@ -103,14 +125,22 @@
             <span>file</span><span>:</span><span id="st-fn"></span>
             <span>size</span><span>:</span><span id="st-fs"></span>
           </div>
-          <div>
+
+          <div class="input-group">
             <input
               type="password"
               id="dl-pw"
               placeholder="auth password"
               autocomplete="off"
             >
+            <select id="retention-select">
+              <option value="6">6 hours</option>
+              <option value="24" selected>24 hours</option>
+              <option value="72">3 days</option>
+              <option value="168">7 days</option>
+            </select>
           </div>
+
           <div class="actions">
             <button onclick="startUpload()">[ start_upload ]</button>
             <button onclick="resetUI()">[ cancel ]</button>
@@ -189,6 +219,8 @@
         if (!pendingFile) return;
         const file = pendingFile;
         const pw = document.getElementById("dl-pw").value;
+        const retentionHours =
+          document.getElementById("retention-select").value;
 
         document.getElementById("fn").textContent = file.name;
         document.getElementById("fs").textContent =
@@ -198,10 +230,11 @@
         document.getElementById("ui").style.display = "block";
 
         xhr = new XMLHttpRequest();
-        // Match Actix route: PUT /{path}
         xhr.open("PUT", "/" + encodeURIComponent(file.name), true);
 
-        // Apply Basic Auth header manually
+        // Header for retention duration
+        xhr.setRequestHeader("X-Retention-Hour", retentionHours);
+
         if (pw) {
           const creds = btoa("user:" + pw);
           xhr.setRequestHeader("Authorization", "Basic " + creds);
@@ -221,9 +254,7 @@
 
         xhr.onload = () => {
           if (xhr.status === 200) {
-            // Extract the URL returned by the server (removing the trailing \n)
             const serverUrl = xhr.responseText.trim();
-
             const linkEl = document.getElementById("ln");
             linkEl.href = serverUrl;
             linkEl.textContent = serverUrl;
@@ -249,6 +280,7 @@
         document.getElementById("staging").style.display = "none";
         document.getElementById("ui").style.display = "none";
         document.getElementById("out").style.display = "none";
+        document.getElementById("retention-select").value = "24"; // Reset to default
       }
 
       function copyUrl(btn) {
