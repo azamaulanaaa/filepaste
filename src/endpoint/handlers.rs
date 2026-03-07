@@ -87,7 +87,18 @@ async fn upload<S: StorageProvider>(
     let reader = payload_to_reader(payload);
 
     match storage.put(&safe_path, reader, &ctx).await {
-        Ok(size) => HttpResponse::Ok().body(format!("Upload successful. Size: {} bytes\n", size)),
+        Ok(_) => {
+            // Get the connection info (e.g., "localhost:8080" or "example.com")
+            let conn = req.connection_info();
+            let scheme = conn.scheme();
+            let host = conn.host();
+
+            // Construct the full URL
+            // Note: safe_path is a PathBuf, so we convert it to a string for the URL
+            let file_url = format!("{}://{}/{}\n", scheme, host, raw_path);
+
+            HttpResponse::Ok().body(file_url)
+        }
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }
 }
