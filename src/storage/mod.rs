@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::time::SystemTime;
 
 use async_trait::async_trait;
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::AsyncRead;
 
 pub type AsyncFileReader = Pin<Box<dyn AsyncRead + Send>>;
 
