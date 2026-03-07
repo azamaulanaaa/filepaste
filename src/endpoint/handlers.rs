@@ -1,7 +1,7 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use actix_web::{HttpResponse, Responder, web};
+use actix_web::{FromRequest, HttpResponse, Responder, web};
 use futures_util::StreamExt;
 use tokio_util::bytes::Bytes;
 use tokio_util::io::StreamReader;
@@ -69,18 +69,16 @@ async fn upload<S: StorageProvider>(
     path: web::Path<String>,
     payload: web::Payload,
     storage: web::Data<S>,
+    ctx: S::Context,
 ) -> impl Responder {
     let raw_path = path.into_inner();
 
-    // 1. Sanitize the path
     let safe_path = match sanitize_relative_path(&raw_path) {
         Ok(p) => p,
         Err(e) => return HttpResponse::BadRequest().body(e),
     };
 
     let reader = payload_to_reader(payload);
-
-    let ctx = S::Context::default();
 
     match storage.put(&safe_path, reader, &ctx).await {
         Ok(size) => HttpResponse::Ok().body(format!("Upload successful. Size: {} bytes\n", size)),
@@ -91,16 +89,14 @@ async fn upload<S: StorageProvider>(
 async fn download<S: StorageProvider>(
     path: web::Path<String>,
     storage: web::Data<S>,
+    ctx: S::Context,
 ) -> impl Responder {
     let raw_path = path.into_inner();
 
-    // 1. Sanitize the path
     let safe_path = match sanitize_relative_path(&raw_path) {
         Ok(p) => p,
         Err(e) => return HttpResponse::BadRequest().body(e),
     };
-
-    let ctx = S::Context::default();
 
     match storage.get(&safe_path, &ctx).await {
         Ok(Some(reader)) => {
@@ -118,7 +114,7 @@ async fn download<S: StorageProvider>(
 pub fn configure<S>(cfg: &mut web::ServiceConfig)
 where
     S: StorageProvider + 'static,
-    S::Context: Send + Sync + Default,
+    S::Context: Send + Sync + Default + FromRequest,
 {
     cfg.service(
         web::resource("/{path:.*}")

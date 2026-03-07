@@ -10,4 +10,7 @@ pub enum AppError {
 
     #[error("Http Error: {0}")]
     HttpError(#[from] actix_web::Error),
+
+    #[error("Password Hash Error: {0}")]
+    PasswordHashError(#[from] argon2::password_hash::Error),
 }

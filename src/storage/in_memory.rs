@@ -1,9 +1,11 @@
 use std::collections::{BTreeMap, HashMap};
+use std::future::{Ready, ready};
 use std::io::{self, Cursor};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::SystemTime;
 
+use actix_web::{Error, FromRequest, HttpRequest, dev::Payload};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
@@ -11,6 +13,15 @@ use super::{AsyncFileReader, DirMetadata, FileMetadata, Resource, StorageProvide
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct InMemoryContext {}
+
+impl FromRequest for InMemoryContext {
+    type Error = Error;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(_req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
+        ready(Ok(Self::default()))
+    }
+}
 
 pub struct InMemoryStorage {
     data: RwLock<BTreeMap<PathBuf, (Vec<u8>, SystemTime)>>,

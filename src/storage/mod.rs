@@ -4,11 +4,13 @@ pub mod encryption;
 pub mod in_memory;
 pub mod local;
 
+use std::future::{Ready, ready};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::SystemTime;
 
+use actix_web::{Error, FromRequest, HttpRequest, dev::Payload};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncRead;
@@ -49,7 +51,7 @@ impl Resource {
 
 #[async_trait]
 pub trait StorageProvider: Send + Sync {
-    type Context: Default + Send + Sync + Clone;
+    type Context: Default + Send + Sync + Clone + FromRequest + 'static;
 
     async fn put(
         &self,
@@ -90,6 +92,15 @@ macro_rules! register_storage_system {
                     return Self::$variant(Default::default());
                 )*
                 unreachable!("No storage variants available for the current build configuration");
+            }
+        }
+
+        impl FromRequest for Context {
+            type Error = Error;
+            type Future = Ready<Result<Self, Self::Error>>;
+
+            fn from_request(_req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
+                ready(Ok(Self::default()))
             }
         }
 

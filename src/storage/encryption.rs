@@ -1,6 +1,8 @@
 use std::io;
 use std::path::Path;
 
+use actix_web::{Error, FromRequest, HttpRequest, dev::Payload, error};
+use actix_web_httpauth::extractors::basic::BasicAuth;
 use argon2::{
     Argon2,
     password_hash::{PasswordHasher, SaltString},
@@ -11,6 +13,7 @@ use chacha20poly1305::{
     aead::stream::{DecryptorBE32, EncryptorBE32},
 };
 use futures::{StreamExt, stream};
+use futures_util::future::LocalBoxFuture;
 use tokio::io::AsyncReadExt;
 use tokio_util::{bytes::Bytes, io::StreamReader};
 
@@ -33,6 +36,41 @@ impl<C> EncryptedContext<C> {
             inner,
             password: password.into(),
         }
+    }
+}
+
+impl<C> FromRequest for EncryptedContext<C>
+where
+    C: FromRequest + 'static,
+    C::Error: Into<Error>,
+{
+    type Error = Error;
+    type Future = LocalBoxFuture<'static, Result<Self, Self::Error>>;
+
+    fn from_request(req: &HttpRequest, payload: &mut Payload) -> Self::Future {
+        // Clone the request for the async block
+        let req_clone = req.clone();
+
+        // 1. Trigger the extraction of `C` *outside* the async block
+        // This avoids borrowing issues with `&mut Payload` inside the static future.
+        let c_future = C::from_request(req, payload);
+
+        Box::pin(async move {
+            // 2. Await the previous extractor (`C`) first
+            let c_instance = c_future.await.map_err(|e| e.into())?; // Convert C's error into a standard Actix error
+
+            // 3. Extract Basic Auth as normal
+            let auth = BasicAuth::extract(&req_clone)
+                .await
+                .map_err(|_| error::ErrorUnauthorized("Missing Credentials"))?;
+
+            let password = auth.password().unwrap_or("").to_string();
+
+            // 6. Inject the extracted `C` instance instead of C::default()
+            let ctx = EncryptedContext::new(c_instance, password);
+
+            Ok(ctx)
+        })
     }
 }
 

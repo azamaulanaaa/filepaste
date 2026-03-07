@@ -4,6 +4,7 @@ mod endpoint;
 mod error;
 mod storage;
 
+use argon2::password_hash::SaltString;
 use clap::Parser;
 use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
@@ -13,6 +14,7 @@ use crate::config::AppConfig;
 use crate::endpoint::serve;
 use crate::error::AppError;
 use crate::storage::Storage;
+use crate::storage::encryption::EncryptedStorage;
 
 #[tokio::main]
 async fn main() -> Result<(), AppError> {
@@ -39,7 +41,10 @@ async fn main() -> Result<(), AppError> {
 
 async fn app(config: AppConfig) -> Result<(), AppError> {
     let storage = Storage::init(config.storage).await?;
-    serve(config.endpoint, storage).await?;
+    let password_salt = SaltString::encode_b64(config.password_salt.as_bytes())?;
+    let encrypted_storage = EncryptedStorage::new(storage, password_salt);
+
+    serve(config.endpoint, encrypted_storage).await?;
 
     Ok(())
 }

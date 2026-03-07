@@ -1,6 +1,8 @@
+use std::future::{Ready, ready};
 use std::io;
 use std::path::{Path, PathBuf};
 
+use actix_web::{Error, FromRequest, HttpRequest, dev::Payload};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tokio::fs::{self, File};
@@ -9,6 +11,15 @@ use super::{AsyncFileReader, DirMetadata, FileMetadata, Resource, StorageProvide
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
 pub struct LocalContext {}
+
+impl FromRequest for LocalContext {
+    type Error = Error;
+    type Future = Ready<Result<Self, Self::Error>>;
+
+    fn from_request(_req: &HttpRequest, _payload: &mut Payload) -> Self::Future {
+        ready(Ok(Self::default()))
+    }
+}
 
 pub struct LocalStorage {
     root: PathBuf,

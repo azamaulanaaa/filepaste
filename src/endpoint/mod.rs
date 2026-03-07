@@ -14,8 +14,8 @@ where
 
     HttpServer::new(move || {
         App::new()
-            .app_data(storage_data.clone())
             .wrap(TracingLogger::default())
+            .app_data(storage_data.clone())
             .configure(handlers::configure::<S>)
     })
     .bind(("0.0.0.0", config.port))?

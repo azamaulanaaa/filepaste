@@ -7,4 +7,5 @@ use crate::{endpoint::config::EndpointConfig, storage::config::StorageConfig};
 pub struct AppConfig {
     pub endpoint: EndpointConfig,
     pub storage: StorageConfig,
+    pub password_salt: String,
 }
