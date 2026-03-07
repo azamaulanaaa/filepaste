@@ -1,4 +1,5 @@
 pub mod config;
+#[cfg(test)]
 pub mod in_memory;
 pub mod local;
 
