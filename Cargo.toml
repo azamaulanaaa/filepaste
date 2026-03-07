@@ -2,6 +2,7 @@
 name = "filepaste"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/azamaulanaaa/filepaste.git"
 
 [dependencies]
 actix-web = "4.13.0"
@@ -22,3 +23,8 @@ tokio-util = { version = "0.7.18", features = ["io"] }
 tracing = "0.1.44"
 tracing-actix-web = "0.7.21"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
