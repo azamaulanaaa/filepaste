@@ -60,10 +60,10 @@ async fn app(config: AppConfig) -> Result<(), AppError> {
         let mut interval = tokio::time::interval(Duration::from_hours(1));
 
         loop {
+            interval.tick().await;
             info!("GC: Starting hourly prune...");
             // .prune() is available here because of the blanket implementation
             let _ = gc_handle.prune(Path::new(""), &Default::default()).await;
-            interval.tick().await;
         }
     });
 
