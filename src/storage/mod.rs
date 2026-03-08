@@ -14,7 +14,6 @@ use std::time::SystemTime;
 use actix_web::{Error, FromRequest, HttpRequest, dev::Payload};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use tempfile::TempDir;
 use tokio::io::AsyncRead;
 
 pub type AsyncFileReader = Pin<Box<dyn AsyncRead + Send>>;
@@ -198,6 +197,7 @@ mod tests {
 
     use std::{io::Cursor, time::Duration};
 
+    use tempfile::TempDir;
     use tokio::io::AsyncReadExt;
 
     async fn run_consistency_test_suite<S: StorageProvider>(storage: S, ctx: &S::Context) {
