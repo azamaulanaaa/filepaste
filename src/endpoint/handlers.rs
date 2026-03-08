@@ -4,11 +4,14 @@ use std::sync::Arc;
 
 use actix_files::NamedFile;
 use actix_web::HttpRequest;
+use actix_web::http::header;
 use actix_web::{
     FromRequest, HttpResponse, Responder, get,
     web::{self},
 };
 use futures_util::StreamExt;
+use rand::distr::Alphanumeric;
+use rand::distr::Distribution;
 use rust_embed::Embed;
 use tokio_util::bytes::Bytes;
 use tokio_util::io::StreamReader;
@@ -72,6 +75,20 @@ fn sanitize_relative_path(user_path: &str) -> Result<PathBuf, &'static str> {
     Ok(resolved_path)
 }
 
+fn generate_random_path(filename: &str) -> PathBuf {
+    // 1. Generate 8 random alphanumeric characters
+    let random_dir: String = Alphanumeric
+        .sample_iter(rand::rng())
+        .take(8)
+        .map(char::from)
+        .collect();
+
+    // 2. Encode filename to base16 (hex)
+    let encoded_filename = base16ct::lower::encode_string(filename.as_bytes());
+
+    PathBuf::from(format!("{}/{}", random_dir, encoded_filename))
+}
+
 async fn upload<S: StorageProvider>(
     req: HttpRequest,
     path: web::Path<String>,
@@ -86,9 +103,28 @@ async fn upload<S: StorageProvider>(
         Err(e) => return HttpResponse::BadRequest().body(e),
     };
 
+    let path_obj = Path::new(&safe_path);
+
+    let components: Vec<_> = path_obj.components().collect();
+
+    let is_single_file = components.len() == 2
+        && matches!(components[0], Component::CurDir)
+        && matches!(components[1], Component::Normal(_));
+
+    if !is_single_file {
+        return HttpResponse::BadRequest().body("Sub-paths are not allowed in upload\n");
+    }
+
+    let filename = match path_obj.file_name().and_then(|s| s.to_str()) {
+        Some(name) => name,
+        None => return HttpResponse::BadRequest().body("Invalid filename\n"),
+    };
+
+    let randomized_path = generate_random_path(filename);
+
     let reader = payload_to_reader(payload);
 
-    match storage.put(&safe_path, reader, &ctx).await {
+    match storage.put(&randomized_path, reader, &ctx).await {
         Ok(_) => {
             // Get the connection info (e.g., "localhost:8080" or "example.com")
             let conn = req.connection_info();
@@ -97,7 +133,12 @@ async fn upload<S: StorageProvider>(
 
             // Construct the full URL
             // Note: safe_path is a PathBuf, so we convert it to a string for the URL
-            let file_url = format!("{}://{}/{}\n", scheme, host, raw_path);
+            let file_url = format!(
+                "{}://{}/{}\n",
+                scheme,
+                host,
+                randomized_path.to_string_lossy()
+            );
 
             HttpResponse::Ok().body(file_url)
         }
@@ -117,6 +158,16 @@ async fn download<S: StorageProvider>(
         Err(e) => return HttpResponse::BadRequest().body(e),
     };
 
+    let hex_filename = match safe_path.file_name().and_then(|s| s.to_str()) {
+        Some(name) => name,
+        None => return HttpResponse::BadRequest().body("Invalid path structure\n"),
+    };
+
+    let original_filename = match base16ct::lower::decode_vec(hex_filename.as_bytes()) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => "file.bin".to_string(), // Fallback if decoding fails
+    };
+
     let metadata = match storage.metadata(&safe_path, &ctx).await {
         Ok(Some(metadata)) => metadata,
         Ok(None) => return HttpResponse::NotFound().body("File not found\n"),
@@ -127,9 +178,16 @@ async fn download<S: StorageProvider>(
         Ok(Some(reader)) => {
             // We turn the AsyncRead back into a stream for Actix
             let stream = tokio_util::io::ReaderStream::new(reader);
+
+            let cd = header::ContentDisposition {
+                disposition: header::DispositionType::Attachment,
+                parameters: vec![header::DispositionParam::Filename(original_filename)],
+            };
+
             HttpResponse::Ok()
                 .content_type("application/octet-stream")
-                .insert_header(("Content-Length", metadata.size))
+                .insert_header(header::ContentLength(metadata.size as usize))
+                .insert_header(cd)
                 .streaming(stream)
         }
         Ok(None) => HttpResponse::NotFound().body("File not found\n"),
