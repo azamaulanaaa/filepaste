@@ -42,39 +42,6 @@ fn payload_to_reader(mut payload: web::Payload) -> AsyncFileReader {
     Box::pin(StreamReader::new(stream))
 }
 
-fn sanitize_relative_path(user_path: &str) -> Result<PathBuf, &'static str> {
-    let mut resolved_path = PathBuf::from(".");
-    let mut depth = 0;
-
-    for component in Path::new(user_path).components() {
-        match component {
-            Component::Normal(name) => {
-                resolved_path.push(name);
-                depth += 1;
-            }
-            Component::ParentDir => {
-                // If depth is 0, the user is trying to use `..` to escape `./`
-                if depth == 0 {
-                    return Err("Path traversal attempt detected");
-                }
-                resolved_path.pop();
-                depth -= 1;
-            }
-            Component::CurDir => {} // Ignore `.` (current directory)
-            Component::RootDir | Component::Prefix(_) => {
-                return Err("Absolute paths are not allowed");
-            }
-        }
-    }
-
-    // Ensure they didn't just request the root directory itself
-    if depth == 0 {
-        return Err("File path cannot be empty");
-    }
-
-    Ok(resolved_path)
-}
-
 fn generate_random_path(filename: &str) -> PathBuf {
     // 1. Generate 8 random alphanumeric characters
     let random_dir: String = Alphanumeric
@@ -98,7 +65,7 @@ async fn upload<S: StorageProvider>(
 ) -> impl Responder {
     let raw_path = path.into_inner();
 
-    let safe_path = match sanitize_relative_path(&raw_path) {
+    let safe_path = match super::lib::sanitize_relative_path(&raw_path) {
         Ok(p) => p,
         Err(e) => return HttpResponse::BadRequest().body(e),
     };
@@ -153,7 +120,7 @@ async fn download<S: StorageProvider>(
 ) -> impl Responder {
     let raw_path = path.into_inner();
 
-    let safe_path = match sanitize_relative_path(&raw_path) {
+    let safe_path = match super::lib::sanitize_relative_path(&raw_path) {
         Ok(p) => p,
         Err(e) => return HttpResponse::BadRequest().body(e),
     };

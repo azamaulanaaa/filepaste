@@ -1,5 +1,6 @@
 pub mod config;
 pub mod handlers;
+pub mod lib;
 
 use std::sync::Arc;
 
