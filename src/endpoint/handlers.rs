@@ -53,7 +53,7 @@ fn generate_random_path(filename: &str) -> PathBuf {
     // 2. Encode filename to base16 (hex)
     let encoded_filename = base16ct::lower::encode_string(filename.as_bytes());
 
-    PathBuf::from(format!("{}/{}", random_dir, encoded_filename))
+    PathBuf::from(".").join(random_dir).join(encoded_filename)
 }
 
 async fn upload<S: StorageProvider>(
@@ -100,14 +100,9 @@ async fn upload<S: StorageProvider>(
 
             // Construct the full URL
             // Note: safe_path is a PathBuf, so we convert it to a string for the URL
-            let file_url = format!(
-                "{}://{}/{}\n",
-                scheme,
-                host,
-                randomized_path.to_string_lossy()
-            );
+            let file_url = PathBuf::from(format!("{}://{}", scheme, host)).join(randomized_path);
 
-            HttpResponse::Ok().body(file_url)
+            HttpResponse::Ok().body(file_url.to_string_lossy().to_string())
         }
         Err(e) => HttpResponse::InternalServerError().body(e.to_string()),
     }

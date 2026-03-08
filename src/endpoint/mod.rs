@@ -64,22 +64,24 @@ mod tests {
             .to_request();
 
         let resp = test::call_service(&app, req).await;
-        assert!(
-            resp.status().is_success(),
-            "Upload failed with status: {}",
-            resp.status()
-        );
+        assert!(resp.status().is_success());
+
+        let body_bytes = test::read_body(resp).await;
+        let body_str = std::str::from_utf8(&body_bytes).unwrap().trim();
+
+        // Extract path from "http://localhost:8080/ABC/123"
+        let url = url::Url::parse(body_str).expect("Failed to parse URL");
+        let generated_path = url.path(); // This returns "/ABC/123"
 
         // --- TEST 2: GET (Download) ---
-        let req = test::TestRequest::get()
-            .uri(&format!("/{}", test_path))
-            .to_request();
+        // 3. Use the extracted path for the GET request
+        let req = test::TestRequest::get().uri(generated_path).to_request();
 
         let resp = test::call_service(&app, req).await;
         assert!(
             resp.status().is_success(),
-            "Download failed with status: {}",
-            resp.status()
+            "Download failed for generated path: {}",
+            generated_path
         );
 
         let body = test::read_body(resp).await;
