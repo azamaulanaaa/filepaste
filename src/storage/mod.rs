@@ -92,7 +92,6 @@ macro_rules! register_storage_system {
                     #[allow(unreachable_code)]
                     return Self::$variant(Default::default());
                 )*
-                unreachable!("No storage variants available for the current build configuration");
             }
         }
 
@@ -110,6 +109,7 @@ macro_rules! register_storage_system {
             type Context = Context;
 
             async fn put(&self, path: &Path, content: AsyncFileReader, ctx: &Self::Context) -> io::Result<u64> {
+                #[allow(unreachable_patterns)]
                 match (self, ctx) {
                     $(
                         $(#[$meta])*
@@ -120,6 +120,7 @@ macro_rules! register_storage_system {
             }
 
             async fn get(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<AsyncFileReader>> {
+                #[allow(unreachable_patterns)]
                 match (self, ctx) {
                     $(
                         $(#[$meta])*
@@ -130,6 +131,7 @@ macro_rules! register_storage_system {
             }
 
             async fn delete(&self, path: &Path, ctx: &Self::Context) -> io::Result<()> {
+                #[allow(unreachable_patterns)]
                 match (self, ctx) {
                     $(
                         $(#[$meta])*
@@ -140,6 +142,7 @@ macro_rules! register_storage_system {
             }
 
             async fn metadata(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<FileMetadata>> {
+                #[allow(unreachable_patterns)]
                 match (self, ctx) {
                     $(
                         $(#[$meta])*
@@ -150,6 +153,7 @@ macro_rules! register_storage_system {
             }
 
             async fn list(&self, path: &Path, ctx: &Self::Context) -> io::Result<Vec<Resource>> {
+                #[allow(unreachable_patterns)]
                 match (self, ctx) {
                     $(
                         $(#[$meta])*

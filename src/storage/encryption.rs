@@ -157,7 +157,6 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
         let key = Key::from_slice(&derived_key);
         let cipher = ChaCha20Poly1305::new(key);
         let encryptor = EncryptorBE32::from_aead(cipher, &nonce.into());
-
         let nonce_stream = stream::once(async move { Ok(Bytes::from(nonce.to_vec())) });
 
         let buffer = vec![0u8; CHUNK_SIZE];
