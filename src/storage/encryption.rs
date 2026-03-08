@@ -3,10 +3,6 @@ use std::path::Path;
 
 use actix_web::{Error, FromRequest, HttpRequest, HttpResponse, dev::Payload, error, http::header};
 use actix_web_httpauth::extractors::basic::BasicAuth;
-use argon2::{
-    Argon2,
-    password_hash::{PasswordHasher, SaltString},
-};
 use async_trait::async_trait;
 use chacha20poly1305::{
     ChaCha20Poly1305, Key, KeyInit,
@@ -14,6 +10,8 @@ use chacha20poly1305::{
 };
 use futures::{StreamExt, stream};
 use futures_util::future::LocalBoxFuture;
+use pbkdf2::pbkdf2_hmac;
+use sha2::Sha256;
 use tokio::io::AsyncReadExt;
 use tokio_util::{bytes::Bytes, io::StreamReader};
 
@@ -95,40 +93,21 @@ where
 
 pub struct EncryptedStorage<S: StorageProvider> {
     inner: S,
-    salt: SaltString,
+    salt: String,
 }
 
 impl<S: StorageProvider> EncryptedStorage<S> {
-    pub fn new(inner: S, salt: SaltString) -> Self {
+    pub fn new(inner: S, salt: String) -> Self {
         Self { inner, salt }
     }
 
-    /// Derives the 32-byte key using the context's password and the storage's salt.
-    /// Note: This is computationally expensive and will run on every read/write.
     fn derive_key(&self, password: &str) -> io::Result<[u8; 32]> {
-        let argon2 = Argon2::default();
-
-        let password_hash = argon2
-            .hash_password(password.as_bytes(), &self.salt)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("Hash error: {}", e)))?;
-
-        let hash = password_hash.hash.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Key derivation failed: empty hash",
-            )
-        })?;
-
-        let hash_bytes = hash.as_bytes();
-        if hash_bytes.len() < 32 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "Derived key too short",
-            ));
-        }
-
         let mut key = [0u8; 32];
-        key.copy_from_slice(&hash_bytes[..32]);
+        let salt = self.salt.as_bytes();
+
+        // 600,000 iterations is the OWASP recommendation for SHA-256
+        // This is CPU-intensive but uses virtually NO extra RAM.
+        pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, 600_000, &mut key);
 
         Ok(key)
     }

@@ -4,7 +4,6 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-use argon2::password_hash::SaltString;
 use criterion::{BenchmarkId, Criterion, Throughput};
 use tempfile::TempDir;
 use tokio::io::{AsyncRead, ReadBuf};
@@ -59,8 +58,7 @@ pub fn bench_encryption(c: &mut Criterion) {
 
     // Setup environment
     let temp_dir = TempDir::new().expect("failed to create temp dir");
-    let salt_key = SaltString::encode_b64(b"fixed_length_salt_for_benchmarking")
-        .expect("unable to generate salt");
+    let salt_key = "fixed_length_salt_for_benchmarking".to_string();
 
     let storage = EncryptedStorage::new(
         LocalStorage::new(temp_dir.path()).expect("failed to start local storage"),

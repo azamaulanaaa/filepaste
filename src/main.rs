@@ -1,7 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use argon2::password_hash::SaltString;
 use clap::Parser;
 use filepaste::gc::spawn_gc;
 use tracing::{Level, error, info};
@@ -42,8 +41,7 @@ async fn app(config: AppConfig) -> Result<(), AppError> {
     let retention_duration = Duration::from_hours(config.default_retention_hours);
     let retention_storage = RetentionStorage::new(storage, retention_duration);
 
-    let password_salt = SaltString::encode_b64(config.password_salt.as_bytes())?;
-    let encrypted_storage = EncryptedStorage::new(retention_storage, password_salt);
+    let encrypted_storage = EncryptedStorage::new(retention_storage, config.password_salt);
 
     let storage_arc = Arc::new(encrypted_storage);
 
