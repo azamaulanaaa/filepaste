@@ -14,6 +14,7 @@ use std::time::SystemTime;
 use actix_web::{Error, FromRequest, HttpRequest, dev::Payload};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tempfile::TempDir;
 use tokio::io::AsyncRead;
 
 pub type AsyncFileReader = Pin<Box<dyn AsyncRead + Send>>;
@@ -263,14 +264,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_local_consistency() {
-        let temp_dir = std::env::temp_dir().join("storage_test");
+        let temp_dir = TempDir::new().expect("Failed to get temporary directory");
         let storage = local::LocalStorage::new(&temp_dir).expect("Failed to create local storage");
         let context = local::LocalContext::default();
 
         run_consistency_test_suite(storage, &context).await;
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(temp_dir);
     }
 
     #[tokio::test]
