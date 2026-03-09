@@ -75,29 +75,31 @@
         gap: 10px;
       }
       input[type="password"],
+      input[type="text"],
       select {
         font-family: monospace;
         padding: 8px;
         border: 1px solid #ccc;
         outline: none;
-        width: 240px; /* Fixed width for both */
-        box-sizing: border-box; /* Ensures padding doesn't add to width */
+        width: 240px;
+        box-sizing: border-box;
         background: #fff;
         color: #000;
-        height: 35px; /* Fixed height for both */
+        height: 35px;
         margin: 5px 0;
+        text-align: center;
       }
 
       select {
         cursor: pointer;
-        -webkit-appearance: none; /* Removes default browser styling if desired */
+        -webkit-appearance: none;
         -moz-appearance: none;
         appearance: none;
-        text-align-last: center; /* Centers text in dropdown */
-        border-radius: 0; /* Square edges to match minimalist look */
+        text-align-last: center;
+        border-radius: 0;
       }
 
-      input[type="password"]:focus,
+      input:focus,
       select:focus {
         border-color: #000;
       }
@@ -127,6 +129,15 @@
           </div>
 
           <div class="input-group">
+            <input
+              type="text"
+              id="auth-totp"
+              placeholder="6-digit totp"
+              maxlength="6"
+              inputmode="numeric"
+              pattern="[0-9]*"
+              autocomplete="one-time-code"
+            >
             <input
               type="password"
               id="dl-pw"
@@ -210,17 +221,24 @@
         document.getElementById("st-fs").textContent =
           (file.size / 1024 / 1024).toFixed(2) + " mb";
         document.getElementById("dl-pw").value = "";
+        document.getElementById("auth-totp").value = ""; // Clear TOTP
         document.getElementById("idle").style.display = "none";
         document.getElementById("staging").style.display = "block";
-        document.getElementById("dl-pw").focus();
+        document.getElementById("auth-totp").focus(); // Focus TOTP first
       }
 
       function startUpload() {
         if (!pendingFile) return;
         const file = pendingFile;
         const pw = document.getElementById("dl-pw").value;
+        const totp = document.getElementById("auth-totp").value; // Get TOTP
         const retentionHours =
           document.getElementById("retention-select").value;
+
+        if (totp.length !== 6 || isNaN(totp)) {
+          alert("Please enter a valid 6-digit TOTP code.");
+          return;
+        }
 
         document.getElementById("fn").textContent = file.name;
         document.getElementById("fs").textContent =
@@ -231,14 +249,11 @@
 
         xhr = new XMLHttpRequest();
         xhr.open("PUT", "/" + encodeURIComponent(file.name), true);
-
-        // Header for retention duration
         xhr.setRequestHeader("X-Retention-Hour", retentionHours);
 
-        if (pw) {
-          const creds = btoa("user:" + pw);
-          xhr.setRequestHeader("Authorization", "Basic " + creds);
-        }
+        // Uses TOTP as the 'user' part of Basic Auth
+        const creds = btoa(totp + ":" + pw);
+        xhr.setRequestHeader("Authorization", "Basic " + creds);
 
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) {
@@ -258,7 +273,6 @@
             const linkEl = document.getElementById("ln");
             linkEl.href = serverUrl;
             linkEl.textContent = serverUrl;
-
             document.getElementById("ui").style.display = "none";
             document.getElementById("out").style.display = "block";
           } else {
@@ -280,7 +294,7 @@
         document.getElementById("staging").style.display = "none";
         document.getElementById("ui").style.display = "none";
         document.getElementById("out").style.display = "none";
-        document.getElementById("retention-select").value = "24"; // Reset to default
+        document.getElementById("retention-select").value = "24";
       }
 
       function copyUrl(btn) {

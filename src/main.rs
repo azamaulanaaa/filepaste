@@ -3,6 +3,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use filepaste::gc::spawn_gc;
+use filepaste::totp::TotpExt;
+use totp_rs::TOTP;
 use tracing::{Level, error, info};
 use tracing_subscriber::FmtSubscriber;
 
@@ -36,17 +38,22 @@ async fn main() -> Result<(), AppError> {
 }
 
 async fn app(config: AppConfig) -> Result<(), AppError> {
-    let storage = Storage::init(config.storage).await?;
+    let totp = TOTP::from_password(&config.totp_secret, &config.password_salt)?;
+    totp.print_qr("default", "filepaste")?;
 
-    let retention_duration = Duration::from_hours(config.default_retention_hours);
-    let retention_storage = RetentionStorage::new(storage, retention_duration);
+    let storage = {
+        let storage = Storage::init(config.storage).await?;
 
-    let encrypted_storage = EncryptedStorage::new(retention_storage, config.password_salt);
+        let retention_duration = Duration::from_hours(config.default_retention_hours);
+        let retention_storage = RetentionStorage::new(storage, retention_duration);
 
-    let storage_arc = Arc::new(encrypted_storage);
+        let encrypted_storage = EncryptedStorage::new(retention_storage, config.password_salt);
 
-    spawn_gc(storage_arc.clone(), Duration::from_hours(1));
-    serve(config.endpoint, storage_arc).await?;
+        Arc::new(encrypted_storage)
+    };
+
+    spawn_gc(storage.clone(), Duration::from_hours(1));
+    serve(config.endpoint, storage, totp).await?;
 
     Ok(())
 }

@@ -9,12 +9,14 @@ use actix_web::{
     FromRequest, HttpResponse, Responder, get,
     web::{self},
 };
+use actix_web_httpauth::extractors::basic::BasicAuth;
 use futures_util::StreamExt;
 use rand::distr::Alphanumeric;
 use rand::distr::Distribution;
 use rust_embed::Embed;
 use tokio_util::bytes::Bytes;
 use tokio_util::io::StreamReader;
+use totp_rs::TOTP;
 
 use crate::storage::{AsyncFileReader, StorageProvider};
 
@@ -60,9 +62,17 @@ async fn upload<S: StorageProvider>(
     req: HttpRequest,
     path: web::Path<String>,
     payload: web::Payload,
+    auth: BasicAuth,
     storage: web::Data<Arc<S>>,
+    totp: web::Data<TOTP>,
     ctx: S::Context,
 ) -> impl Responder {
+    match totp.into_inner().check_current(auth.user_id()) {
+        Ok(true) => (),
+        Ok(false) => return HttpResponse::Unauthorized().body("Invalid TOTP"),
+        Err(e) => return HttpResponse::InternalServerError().body(e.to_string()),
+    }
+
     let raw_path = path.into_inner();
 
     let safe_path = match super::lib::sanitize_relative_path(&raw_path) {

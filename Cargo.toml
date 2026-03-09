@@ -10,12 +10,14 @@ actix-web = "4.13.0"
 actix-web-httpauth = "0.8.2"
 async-trait = "0.1.89"
 base16ct = { version = "1.0.0", features = ["alloc"] }
+base64ct = { version = "1.8.3", features = ["alloc"] }
 chacha20poly1305 = { version = "0.10.1", features = ["stream"] }
 clap = { version = "4.5.60", features = ["derive", "env"] }
 confy = "2.0.0"
 futures = "0.3.32"
 futures-util = "0.3.32"
 pbkdf2 = "0.12.2"
+qr2term = "0.3.3"
 rand = { version = "0.10.0", features = ["thread_rng"] }
 rust-embed = "8.11.0"
 serde = { version = "1.0.228", features = ["derive"] }
@@ -24,6 +26,7 @@ thiserror = "2.0.18"
 tokio = { version = "1.50.0", features = ["full"] }
 tokio-stream = "0.1.18"
 tokio-util = { version = "0.7.18", features = ["io"] }
+totp-rs = "5.7.0"
 tracing = "0.1.44"
 tracing-actix-web = "0.7.21"
 tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
