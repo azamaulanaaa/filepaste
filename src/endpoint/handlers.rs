@@ -53,7 +53,7 @@ fn generate_random_path(filename: &str) -> PathBuf {
     // 2. Encode filename to base16 (hex)
     let encoded_filename = base16ct::lower::encode_string(filename.as_bytes());
 
-    PathBuf::from(".").join(random_dir).join(encoded_filename)
+    PathBuf::new().join(random_dir).join(encoded_filename)
 }
 
 async fn upload<S: StorageProvider>(
@@ -91,7 +91,10 @@ async fn upload<S: StorageProvider>(
 
     let reader = payload_to_reader(payload);
 
-    match storage.put(&randomized_path, reader, &ctx).await {
+    match storage
+        .put(&PathBuf::from(".").join(&randomized_path), reader, &ctx)
+        .await
+    {
         Ok(_) => {
             // Get the connection info (e.g., "localhost:8080" or "example.com")
             let conn = req.connection_info();
