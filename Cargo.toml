@@ -9,7 +9,6 @@ actix-files = "0.6.10"
 actix-web = "4.13.0"
 actix-web-httpauth = "0.8.2"
 async-trait = "0.1.89"
-base16ct = { version = "1.0.0", features = ["alloc"] }
 base64ct = { version = "1.8.3", features = ["alloc"] }
 chacha20poly1305 = { version = "0.10.1", features = ["stream"] }
 clap = { version = "4.5.60", features = ["derive", "env"] }

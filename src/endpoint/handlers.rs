@@ -10,6 +10,7 @@ use actix_web::{
     web::{self},
 };
 use actix_web_httpauth::extractors::basic::BasicAuth;
+use base64ct::{Base64UrlUnpadded, Encoding};
 use futures_util::StreamExt;
 use rand::distr::Alphanumeric;
 use rand::distr::Distribution;
@@ -52,8 +53,8 @@ fn generate_random_path(filename: &str) -> PathBuf {
         .map(char::from)
         .collect();
 
-    // 2. Encode filename to base16 (hex)
-    let encoded_filename = base16ct::lower::encode_string(filename.as_bytes());
+    // 2. Encode filename
+    let encoded_filename = Base64UrlUnpadded::encode_string(filename.as_bytes());
 
     PathBuf::new().join(random_dir).join(encoded_filename)
 }
@@ -138,7 +139,7 @@ async fn download<S: StorageProvider>(
         None => return HttpResponse::BadRequest().body("Invalid path structure\n"),
     };
 
-    let original_filename = match base16ct::lower::decode_vec(hex_filename.as_bytes()) {
+    let original_filename = match Base64UrlUnpadded::decode_vec(hex_filename) {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(_) => "file.bin".to_string(), // Fallback if decoding fails
     };
