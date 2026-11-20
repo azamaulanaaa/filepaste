@@ -18,16 +18,22 @@ use filepaste::storage::{Storage, encryption::EncryptedStorage, retention::Reten
 async fn main() -> Result<(), AppError> {
     let app_name = env!("CARGO_PKG_NAME");
 
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
-        .finish();
+    let args = Args::parse();
+    let level = match args.verbose {
+        0 => Level::INFO,
+        1 => Level::DEBUG,
+        _ => Level::TRACE,
+    };
+    let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
-    let args = Args::parse();
     info!("Starting application with verbosity: {}", args.verbose);
 
     let cfg: AppConfig = confy::load(app_name, None)?;
-    info!("Configuration loaded: {:?}", cfg);
+    info!(
+        "Configuration loaded: endpoint {}:{}, storage {:?}",
+        cfg.endpoint.host, cfg.endpoint.port, cfg.storage
+    );
 
     if let Err(e) = app(cfg).await {
         error!("Application crashed: {}", e);
