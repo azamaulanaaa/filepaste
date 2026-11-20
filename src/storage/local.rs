@@ -1,6 +1,6 @@
 use std::future::{Ready, ready};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use actix_web::{Error, FromRequest, HttpRequest, dev::Payload};
 use async_trait::async_trait;
@@ -34,9 +34,22 @@ impl LocalStorage {
         Ok(Self { root })
     }
 
-    /// Helper to join the root with the relative path provided by the trait
-    fn full_path(&self, path: &Path) -> PathBuf {
-        self.root.join(path)
+    /// Helper to join the root with a relative path, rejecting components that escape it.
+    fn full_path(&self, path: &Path) -> io::Result<PathBuf> {
+        let mut full = self.root.clone();
+        for component in path.components() {
+            match component {
+                Component::Normal(name) => full.push(name),
+                Component::CurDir => {}
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Invalid storage path",
+                    ));
+                }
+            }
+        }
+        Ok(full)
     }
 
     /// Recursively deletes empty parent directories up to (but not including) the root.
@@ -71,7 +84,7 @@ impl StorageProvider for LocalStorage {
         mut content: AsyncFileReader,
         _ctx: &Self::Context,
     ) -> io::Result<u64> {
-        let full_path = self.full_path(path);
+        let full_path = self.full_path(path)?;
 
         if full_path.is_dir() {
             return Err(io::Error::new(
@@ -82,8 +95,7 @@ impl StorageProvider for LocalStorage {
 
         if let Some(parent) = full_path.parent() {
             if parent.is_file() {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
+                return Err(io::Error::other(
                     "Parent path component is a file, not a directory",
                 ));
             }
@@ -98,7 +110,7 @@ impl StorageProvider for LocalStorage {
     }
 
     async fn get(&self, path: &Path, _ctx: &Self::Context) -> io::Result<Option<AsyncFileReader>> {
-        let full_path = self.full_path(path);
+        let full_path = self.full_path(path)?;
 
         match File::open(full_path).await {
             Ok(file) => Ok(Some(Box::pin(file))),
@@ -108,7 +120,7 @@ impl StorageProvider for LocalStorage {
     }
 
     async fn delete(&self, path: &Path, _ctx: &Self::Context) -> io::Result<()> {
-        let full_path = self.full_path(path);
+        let full_path = self.full_path(path)?;
 
         // 1. REJECT manual directory deletion
         if full_path.is_dir() {
@@ -136,7 +148,7 @@ impl StorageProvider for LocalStorage {
         path: &Path,
         _ctx: &Self::Context,
     ) -> io::Result<Option<FileMetadata>> {
-        let full_path = self.full_path(path);
+        let full_path = self.full_path(path)?;
         match fs::metadata(full_path).await {
             Ok(meta) => Ok(Some(FileMetadata {
                 size: meta.len(),
@@ -148,7 +160,7 @@ impl StorageProvider for LocalStorage {
     }
 
     async fn list(&self, path: &Path, _ctx: &Self::Context) -> io::Result<Vec<Resource>> {
-        let full_path = self.full_path(path);
+        let full_path = self.full_path(path)?;
         let mut entries = fs::read_dir(full_path).await?;
         let mut resources = Vec::new();
 

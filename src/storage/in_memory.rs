@@ -49,14 +49,14 @@ impl StorageProvider for InMemoryStorage {
         // Drain the reader into our local buffer
         let bytes_written = tokio::io::copy(&mut content, &mut buffer).await?;
 
-        let mut map = self.data.write().unwrap();
+        let mut map = self.data.write().expect("in-memory storage lock poisoned");
         map.insert(path.to_path_buf(), (buffer, SystemTime::now()));
 
         Ok(bytes_written)
     }
 
     async fn get(&self, path: &Path, _ctx: &Self::Context) -> io::Result<Option<AsyncFileReader>> {
-        let map = self.data.read().unwrap();
+        let map = self.data.read().expect("in-memory storage lock poisoned");
 
         if let Some((bytes, _)) = map.get(path) {
             // We clone the bytes to give the caller their own owned reader.
@@ -69,7 +69,7 @@ impl StorageProvider for InMemoryStorage {
     }
 
     async fn delete(&self, path: &Path, _ctx: &Self::Context) -> io::Result<()> {
-        let mut map = self.data.write().unwrap();
+        let mut map = self.data.write().expect("in-memory storage lock poisoned");
         map.remove(path);
         Ok(())
     }
@@ -79,7 +79,7 @@ impl StorageProvider for InMemoryStorage {
         path: &Path,
         _ctx: &Self::Context,
     ) -> io::Result<Option<FileMetadata>> {
-        let map = self.data.read().unwrap();
+        let map = self.data.read().expect("in-memory storage lock poisoned");
         Ok(map.get(path).map(|(bytes, modified)| FileMetadata {
             size: bytes.len() as u64,
             modified: *modified,
@@ -87,7 +87,7 @@ impl StorageProvider for InMemoryStorage {
     }
 
     async fn list(&self, prefix: &Path, _ctx: &Self::Context) -> io::Result<Vec<Resource>> {
-        let map = self.data.read().unwrap();
+        let map = self.data.read().expect("in-memory storage lock poisoned");
         let mut files = Vec::new();
         let mut dirs: HashMap<PathBuf, SystemTime> = HashMap::new();
 
