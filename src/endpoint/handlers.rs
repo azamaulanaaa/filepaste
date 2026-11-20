@@ -31,7 +31,7 @@ fn payload_to_reader(mut payload: web::Payload) -> AsyncFileReader {
     // This works because Actix runs the handler on a thread where the payload is valid.
     actix_web::rt::spawn(async move {
         while let Some(item) = payload.next().await {
-            let result = item.map_err(|e| io::Error::new(io::ErrorKind::Other, e));
+            let result = item.map_err(|e| io::Error::other(e));
             if tx.send(result).await.is_err() {
                 break; // Receiver dropped, stop pumping
             }
@@ -152,6 +152,10 @@ async fn download<S: StorageProvider>(
 
     match storage.get(&safe_path, &ctx).await {
         Ok(Some(reader)) => {
+            let Ok(content_length) = usize::try_from(metadata.size) else {
+                return HttpResponse::InternalServerError().body("File too large\n");
+            };
+
             // We turn the AsyncRead back into a stream for Actix
             let stream = tokio_util::io::ReaderStream::new(reader);
 
@@ -162,7 +166,7 @@ async fn download<S: StorageProvider>(
 
             HttpResponse::Ok()
                 .content_type("application/octet-stream")
-                .insert_header(header::ContentLength(metadata.size as usize))
+                .insert_header(header::ContentLength(content_length))
                 .insert_header(cd)
                 .streaming(stream)
         }
