@@ -1,0 +1,183 @@
+name: Checks
+
+on:
+  push:
+    branches:
+      - main
+      - 'feature/**'
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Run every Monday at 03:00 UTC.
+    - cron: '0 3 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-24.04
+    container:
+      image: jdxcode/mise@sha256:05360b08fb68ace24d4814adaa6f36371584f6931782ead4891872049667af5a # jdxcode/mise:2026.11.8-debian
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Add a check with one entry below. Set name to the check name.
+          # Set install_args to the tools that mise installs. Set script to
+          # the check script path. Use install_args: '' when the check needs
+          # no tool.
+          - name: mise
+            install_args: ''
+            script: scripts/check-mise.sh
+          - name: jactionlint
+            install_args: jactionlint
+            script: scripts/check-jactionlint.sh
+          - name: bash
+            install_args: shellcheck
+            script: scripts/check-bash.sh
+          - name: shfmt
+            install_args: shfmt
+            script: scripts/check-shfmt.sh
+          - name: commits
+            install_args: cocogitto
+            script: scripts/check-commits.sh
+          - name: markdown
+            install_args: "node npm:markdownlint-cli2"
+            script: scripts/check-markdown.sh
+          - name: hadolint
+            install_args: hadolint
+            script: scripts/check-hadolint.sh
+          - name: dockerfmt
+            install_args: github:reteps/dockerfmt
+            script: scripts/check-dockerfmt.sh
+          - name: dclint
+            install_args: "node npm:dclint"
+            script: scripts/check-dclint.sh
+          - name: zizmor
+            install_args: zizmor
+            script: scripts/check-zizmor.sh
+          - name: cargo
+            install_args: rust
+            script: scripts/check-cargo.sh
+          - name: clippy
+            install_args: rust
+            script: scripts/check-clippy.sh
+          - name: rustfmt
+            install_args: rust
+            script: scripts/check-rustfmt.sh
+          - name: cargo-deny-advisories
+            install_args: "rust cargo-deny"
+            script: scripts/check-cargo-deny-advisories.sh
+          - name: cargo-deny-bans
+            install_args: "rust cargo-deny"
+            script: scripts/check-cargo-deny-bans.sh
+          - name: cargo-deny-licenses
+            install_args: "rust cargo-deny"
+            script: scripts/check-cargo-deny-licenses.sh
+          - name: cargo-deny-sources
+            install_args: "rust cargo-deny"
+            script: scripts/check-cargo-deny-sources.sh
+    steps:
+      - name: Check out the repository
+        if: matrix.name != 'commits'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out the repository with full history
+        if: matrix.name == 'commits'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Install a C toolchain for Rust checks
+        if: contains(matrix.install_args, 'rust')
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential
+      - name: Install tools with cache
+        if: matrix.install_args != ''
+        uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
+        with:
+          cache: true
+          version: "2026.11.8"
+          install_args: ${{ matrix.install_args }}
+      - name: Trust the checkout directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Run the check
+        run: ${{ matrix.script }}
+
+  pr-title:
+    name: PR title
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    container:
+      image: jdxcode/mise@sha256:05360b08fb68ace24d4814adaa6f36371584f6931782ead4891872049667af5a # jdxcode/mise:2026.11.8-debian
+    timeout-minutes: 10
+    steps:
+      - name: Check the pull request title
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          regex='^(feat|fix|docs|test|refactor|perf|build|ci|chore)(\([a-z0-9._/-]+\))?!?: .+$'
+          if [[ ! "$PR_TITLE" =~ $regex ]]; then
+            echo "error: Write the pull request title in the commit format." >&2
+            exit 1
+          fi
+
+  gitleaks:
+    name: gitleaks
+    runs-on: ubuntu-24.04
+    container:
+      image: jdxcode/mise@sha256:05360b08fb68ace24d4814adaa6f36371584f6931782ead4891872049667af5a # jdxcode/mise:2026.11.8-debian
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Trust the checkout directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install gitleaks
+        run: mise install gitleaks
+      - name: Scan the repository for secrets
+        run: scripts/check-gitleaks.sh
+
+  editorconfig:
+    name: editorconfig
+    runs-on: ubuntu-24.04
+    container:
+      image: jdxcode/mise@sha256:05360b08fb68ace24d4814adaa6f36371584f6931782ead4891872049667af5a # jdxcode/mise:2026.11.8-debian
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Trust the checkout directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Install editorconfig-checker
+        run: mise install editorconfig-checker
+      - name: Check the files against EditorConfig rules
+        run: scripts/check-editorconfig.sh
+
+  dependency-review:
+    name: dependency-review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Review the dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0

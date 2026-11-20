@@ -1,0 +1,20 @@
+# mise installs local development dependencies only.
+# Git hooks and make do not use mise.
+
+[tools]
+cargo-deny = "0"
+cocogitto = "7"
+editorconfig-checker = "4"
+"github:reteps/dockerfmt" = "0"
+gitleaks = "8"
+hadolint = "2"
+jactionlint = "2"
+make = "4"
+# The npm tools need the Node.js runtime.
+node = "24"
+"npm:dclint" = "3"
+"npm:markdownlint-cli2" = "0"
+rust = "stable"
+shellcheck = "0"
+shfmt = "3"
+zizmor = "1"
