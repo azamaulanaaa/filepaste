@@ -1,13 +1,16 @@
 name: Release Container Image
 
-# Run when the "Release" workflow finishes
+# Run after the Release workflow creates a GitHub Release.
 on:
-  workflow_run:
-    workflows:
-      - Release
-    types:
-      - completed
+  workflow_call:
+    secrets:
+      GITHUB_TOKEN:
+        required: true
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
@@ -16,14 +19,15 @@ env:
 
 jobs:
   build-arch-images:
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: write
     outputs:
       tag: ${{ steps.get_tag.outputs.tag }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: amd64
@@ -35,21 +39,23 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Get latest release tag
         id: get_tag
-        run: |
-          TAG=$(gh release list --limit 1 --json tagName --jq '.[0].tagName')
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="$(gh release list --limit 1 --json tagName --jq '.[0].tagName')"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Log in to the Container registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -57,36 +63,31 @@ jobs:
 
       - name: Download Release Asset
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.get_tag.outputs.tag }}
           TARGET: ${{ matrix.target }}
         run: |
-          echo "Attempting to download artifact for $TARGET (tag: $TAG)..."
           if gh release download "$TAG" --pattern "*$TARGET.tar.xz" --dir download; then
-            echo "Download successful!"
+            echo "Downloaded the asset for $TARGET."
           fi
 
       - name: Extract Binary
+        env:
+          TARGET: ${{ matrix.target }}
+          BINARY_NAME: ${{ env.BINARY_NAME }}
         run: |
           cd download
-          # Extract the tarball
-          tar -xvf *${{ matrix.target }}.tar.xz
-
-          # Locate the binary inside the extracted folder and move to root
-          FOUND_BIN=$(find . -name "${{ env.BINARY_NAME }}" -type f | head -n 1)
-
-          if [ -z "$FOUND_BIN" ]; then
-            echo "Could not find binary named ${{ env.BINARY_NAME }} in extracted files"
+          tar -xvf -- *"$TARGET"*.tar.xz
+          found_bin="$(find . -name "$BINARY_NAME" -type f | head -n 1)"
+          if [ -z "$found_bin" ]; then
+            echo "Could not find the binary $BINARY_NAME in the extracted files." >&2
             exit 1
           fi
-
-          mv "$FOUND_BIN" ../${{ env.BINARY_NAME }}
-          chmod +x ../${{ env.BINARY_NAME }}
-
-          echo "Binary moved to project root successfully."
+          mv "$found_bin" "../$BINARY_NAME"
+          chmod +x "../$BINARY_NAME"
 
       - name: Build and push intermediate image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: .github/Dockerfile
@@ -99,30 +100,26 @@ jobs:
   create-manifest:
     needs: build-arch-images
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       packages: write
     steps:
       - name: Log in to the Container registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create and Push Manifest
+        env:
+          BASE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          TAG: ${{ needs.build-arch-images.outputs.tag }}
         run: |
-          BASE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}"
-          TAG="${{ needs.build-arch-images.outputs.tag }}"
-
-          # 1. Create the specific version tag (e.g. v1.0.0)
-          # combining amd64 and arm64
-          docker buildx imagetools create -t ${BASE}:${TAG} \
-            ${BASE}:${TAG}-amd64 \
-            ${BASE}:${TAG}-arm64
-
-          # 2. Update the 'latest' tag
-          docker buildx imagetools create -t ${BASE}:latest \
-            ${BASE}:${TAG}-amd64 \
-            ${BASE}:${TAG}-arm64
-
-          echo "Successfully pushed ${BASE}:${TAG} and ${BASE}:latest"
+          docker buildx imagetools create -t "${BASE}:${TAG}" \
+            "${BASE}:${TAG}-amd64" \
+            "${BASE}:${TAG}-arm64"
+          docker buildx imagetools create -t "${BASE}:latest" \
+            "${BASE}:${TAG}-amd64" \
+            "${BASE}:${TAG}-arm64"
+          echo "Pushed ${BASE}:${TAG} and ${BASE}:latest."
