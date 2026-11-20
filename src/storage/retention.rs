@@ -95,7 +95,10 @@ pub struct RetentionContext<C> {
 
 impl<C> RetentionContext<C> {
     pub fn new(inner: C, hours: Option<u64>) -> Self {
-        let retain_until = hours.map(|v| SystemTime::now() + Duration::from_hours(v));
+        let retain_until = hours.and_then(|v| {
+            v.checked_mul(3600)
+                .and_then(|secs| SystemTime::now().checked_add(Duration::from_secs(secs)))
+        });
         Self {
             inner,
             retain_until,
@@ -157,14 +160,13 @@ impl<S: StorageProvider> StorageProvider for RetentionStorage<S> {
         ctx: &Self::Context,
     ) -> io::Result<u64> {
         // Enforce lock on overwrite
-        if let Ok(Some(mut existing)) = self.inner.get(path, &ctx.inner).await {
-            if let Ok(hdr) = RetentionHeader::decode(&mut existing).await {
-                if hdr.retain_until > SystemTime::now() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "File is locked via SystemTime retention",
-                    ));
-                }
+        if let Some(mut existing) = self.inner.get(path, &ctx.inner).await? {
+            let hdr = RetentionHeader::decode(&mut existing).await?;
+            if hdr.retain_until > SystemTime::now() {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "File is locked via SystemTime retention",
+                ));
             }
         }
 
