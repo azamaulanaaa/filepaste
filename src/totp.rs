@@ -15,18 +15,25 @@ impl TotpExt for TOTP {
         let mut seed = [0u8; 20];
         pbkdf2_hmac::<Sha256>(password.as_bytes(), salt.as_bytes(), 600_000, &mut seed);
 
-        let totp = TOTP::new(Algorithm::SHA1, 6, 1, 30, seed.to_vec())?;
+        let totp = TOTP::new(
+            Algorithm::SHA1,
+            6,
+            1,
+            30,
+            seed.to_vec(),
+            None,
+            String::new(),
+        )?;
 
         Ok(totp)
     }
 
     fn gen_url(&self, account_name: &str, issuer: &str) -> String {
-        let secret_base32 = self.get_secret_base32();
+        let mut totp = self.clone();
+        totp.account_name = account_name.to_string();
+        totp.issuer = Some(issuer.to_string());
 
-        format!(
-            "otpauth://totp/{}:{}?secret={}&issuer={}&digits={}&period={}",
-            issuer, account_name, secret_base32, issuer, self.digits, self.step
-        )
+        totp.get_url()
     }
 
     fn print_qr(&self, account_name: &str, issuer: &str) -> Result<(), qr2term::QrError> {
