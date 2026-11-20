@@ -2,7 +2,7 @@
 # Read and validate the smolvm CPU and memory settings.
 # Source this file from a smolvm script. Do not run it as a command.
 # The settings come from SMOLVM_CPUS and SMOLVM_MEMORY_MB.
-# The defaults are one CPU and 512 MiB of memory.
+# The defaults are one CPU and 1024 MiB of memory.
 
 # Print an error when a value is not a positive integer.
 smolvm_resources_check_integer() {
@@ -18,7 +18,7 @@ smolvm_resources_check_integer() {
 # SMOLVM_CPUS_VALUE and SMOLVM_MEMORY_MB_VALUE.
 smolvm_resources_resolve() {
   local cpus="${SMOLVM_CPUS-1}"
-  local memory_mb="${SMOLVM_MEMORY_MB-512}"
+  local memory_mb="${SMOLVM_MEMORY_MB-1024}"
   if ! smolvm_resources_check_integer "SMOLVM_CPUS" "$cpus"; then
     return 1
   fi
@@ -34,7 +34,7 @@ smolvm_resources_resolve() {
 # A pack built for one resource setting is then not reused for another.
 smolvm_resources_hash_lines() {
   sha256sum mise.toml smol/*.smolfile smol/pack-build.sh smol/init.sh
-  if [[ "$SMOLVM_CPUS_VALUE" != "1" || "$SMOLVM_MEMORY_MB_VALUE" != "512" ]]; then
+  if [[ "$SMOLVM_CPUS_VALUE" != "1" || "$SMOLVM_MEMORY_MB_VALUE" != "1024" ]]; then
     printf 'cpus=%s\n' "$SMOLVM_CPUS_VALUE"
     printf 'memoryMb=%s\n' "$SMOLVM_MEMORY_MB_VALUE"
   fi

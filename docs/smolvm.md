@@ -217,6 +217,9 @@ database.
   integer. The timeout bounds the whole remote run after the staging
   step, including the init exec and the guest command. Each HTTP call
   still uses `SMOLVM_SERVE_TIMEOUT` as its curl max-time.
+- `SMOLVM_SERVE_SESSIONS` selects the remote exec path. The default value
+  is `1`. Set it to `0` to use the buffered path when the server collects
+  long exec sessions.
 - `SMOLVM_SERVE_ALLOW_HOSTS` adds an egress allow list to the machine.
   The value is a comma-separated list of hostnames. The default is
   unset. An unset value keeps the create body unchanged. A set value
@@ -238,7 +241,7 @@ database.
 - `SMOLVM_CPUS` sets the CPU count of the machine. The default value is
   `1`. The value must be a positive integer.
 - `SMOLVM_MEMORY_MB` sets the memory of the machine in MiB. The default
-  value is `512`. The value must be a positive integer.
+  value is `1024`. The value must be a positive integer.
 
 `SMOLVM_CPUS` and `SMOLVM_MEMORY_MB` also set the resources of the local
 build machine. The scripts stop when either value is not a positive
@@ -1070,8 +1073,8 @@ Check these points on your smolvm version.
     command. `machine run --from` takes the command as an argument, so
     no detached workload is involved.
 3. Check that `smolvm machine run` in foreground mode propagates the
-   guest exit code. If it does not on your version, `make smolvm`
-   needs a check of the guest output instead.
+    guest exit code. If it does not on your version, `make smolvm`
+    needs a check of the guest output instead.
 4. The `[artifact]` table in `smol/base.smolfile` is documented for
     packs created from a Smolfile. The documentation does not state
     whether it is read for `pack create --from-vm`. The build passes

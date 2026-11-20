@@ -122,8 +122,8 @@ if [[ -n "${SMOLVM_ADDR:-}" ]]; then
     if smolvm_resources_resolve; then
       cache_bases=()
       cache_bases+=("$(serve_cache_base_name "$PWD")")
-      if [[ "$SMOLVM_CPUS_VALUE" != "1" || "$SMOLVM_MEMORY_MB_VALUE" != "512" ]]; then
-        cache_bases+=("$(SMOLVM_CPUS_VALUE=1 SMOLVM_MEMORY_MB_VALUE=512 serve_cache_base_name "$PWD")")
+      if [[ "$SMOLVM_CPUS_VALUE" != "1" || "$SMOLVM_MEMORY_MB_VALUE" != "1024" ]]; then
+        cache_bases+=("$(SMOLVM_CPUS_VALUE=1 SMOLVM_MEMORY_MB_VALUE=1024 serve_cache_base_name "$PWD")")
       fi
       seed_name="${SMOLVM_SERVE_CACHE_SEED-smolvm-seed.qcow2}"
       kept_bases=()

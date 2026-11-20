@@ -5,7 +5,7 @@
 # The repository is mounted at /workspace at run time. It is not baked in.
 # This file is a template. The build replaces __SMOLVM_CPUS__ with the
 # value of SMOLVM_CPUS and __SMOLVM_MEMORY_MB__ with the value of
-# SMOLVM_MEMORY_MB. The defaults are 1 CPU and 512 MiB of memory.
+# SMOLVM_MEMORY_MB. The defaults are 1 CPU and 1024 MiB of memory.
 image = "debian:stable-slim"
 workdir = "/workspace"
 cpus = __SMOLVM_CPUS__

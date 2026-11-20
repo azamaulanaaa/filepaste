@@ -1482,6 +1482,14 @@ serve_probe_sessions() {
   local body=""
 
   SERVE_SESSION_MODE=0
+
+  # Some servers collect long exec sessions before the client reads the
+  # exit code. Set SMOLVM_SERVE_SESSIONS=0 to use the buffered path.
+  if [[ "${SMOLVM_SERVE_SESSIONS:-1}" == "0" ]]; then
+    echo "note: SMOLVM_SERVE_SESSIONS=0 selects the buffered exec path." >&2
+    return 0
+  fi
+
   body_file="$(mktemp "${TMPDIR:-/tmp}/smolvm-probe.XXXXXX")" || return 1
   status="$(serve_request_capture GET "/api/v1/machines/${worker}/execs" \
     "$body_file")" || rc=$?
