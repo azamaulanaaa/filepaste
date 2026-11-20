@@ -187,7 +187,7 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
                 if total_read < CHUNK_SIZE {
                     let res = encryptor
                         .encrypt_last(chunk)
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()));
+                        .map_err(|e| io::Error::other(e.to_string()));
 
                     match res {
                         // encryptor is consumed, return None
@@ -199,7 +199,7 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
                 } else {
                     let res = encryptor
                         .encrypt_next(chunk)
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()));
+                        .map_err(|e| io::Error::other(e.to_string()));
 
                     match res {
                         Ok(ciphertext) => Some((

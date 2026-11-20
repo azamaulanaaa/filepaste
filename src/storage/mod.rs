@@ -89,7 +89,7 @@ macro_rules! register_storage_system {
             fn default() -> Self {
                 $(
                     $(#[$meta])*
-                    #[allow(unreachable_code)]
+                    #[allow(unreachable_code, reason = "early return makes later arms unreachable")]
                     return Self::$variant(Default::default());
                 )*
             }
@@ -109,7 +109,7 @@ macro_rules! register_storage_system {
             type Context = Context;
 
             async fn put(&self, path: &Path, content: AsyncFileReader, ctx: &Self::Context) -> io::Result<u64> {
-                #[allow(unreachable_patterns)]
+                #[allow(unreachable_patterns, reason = "wildcard unreachable with one variant")]
                 match (self, ctx) {
                     $(
                         $(#[$meta])*
@@ -120,7 +120,7 @@ macro_rules! register_storage_system {
             }
 
             async fn get(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<AsyncFileReader>> {
-                #[allow(unreachable_patterns)]
+                #[allow(unreachable_patterns, reason = "wildcard unreachable with one variant")]
                 match (self, ctx) {
                     $(
                         $(#[$meta])*
@@ -131,7 +131,7 @@ macro_rules! register_storage_system {
             }
 
             async fn delete(&self, path: &Path, ctx: &Self::Context) -> io::Result<()> {
-                #[allow(unreachable_patterns)]
+                #[allow(unreachable_patterns, reason = "wildcard unreachable with one variant")]
                 match (self, ctx) {
                     $(
                         $(#[$meta])*
@@ -142,7 +142,7 @@ macro_rules! register_storage_system {
             }
 
             async fn metadata(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<FileMetadata>> {
-                #[allow(unreachable_patterns)]
+                #[allow(unreachable_patterns, reason = "wildcard unreachable with one variant")]
                 match (self, ctx) {
                     $(
                         $(#[$meta])*
@@ -153,7 +153,7 @@ macro_rules! register_storage_system {
             }
 
             async fn list(&self, path: &Path, ctx: &Self::Context) -> io::Result<Vec<Resource>> {
-                #[allow(unreachable_patterns)]
+                #[allow(unreachable_patterns, reason = "wildcard unreachable with one variant")]
                 match (self, ctx) {
                     $(
                         $(#[$meta])*
