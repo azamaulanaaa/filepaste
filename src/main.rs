@@ -58,7 +58,7 @@ async fn app(config: AppConfig) -> Result<(), AppError> {
         Arc::new(encrypted_storage)
     };
 
-    spawn_gc(storage.clone(), Duration::from_hours(1));
+    let _gc_handle = spawn_gc(storage.clone(), Duration::from_hours(1));
     serve(config.endpoint, storage, totp).await?;
 
     Ok(())

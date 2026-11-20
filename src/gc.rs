@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::storage::{Resource, StorageProvider};
 
@@ -36,7 +36,7 @@ trait StoragePrune: StorageProvider {
 
 impl<T: StorageProvider> StoragePrune for T {}
 
-pub fn spawn_gc<S>(storage: Arc<S>, interval: Duration)
+pub fn spawn_gc<S>(storage: Arc<S>, interval: Duration) -> tokio::task::JoinHandle<()>
 where
     S: StorageProvider + 'static,
 {
@@ -46,7 +46,9 @@ where
         loop {
             interval.tick().await;
             info!("Start pruning files");
-            let _ = storage.prune(Path::new(""), &Default::default()).await;
+            if let Err(e) = storage.prune(Path::new(""), &Default::default()).await {
+                error!("Pruning failed: {e}");
+            }
         }
-    });
+    })
 }
