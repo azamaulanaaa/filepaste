@@ -1,3 +1,4 @@
+use rand::distr::{Alphanumeric, Distribution};
 use serde::{Deserialize, Serialize};
 
 use crate::{endpoint::config::EndpointConfig, storage::config::StorageConfig};
@@ -17,9 +18,17 @@ impl Default for AppConfig {
         Self {
             endpoint: Default::default(),
             storage: Default::default(),
-            password_salt: env!("CARGO_PKG_NAME").to_string(),
+            password_salt: Alphanumeric
+                .sample_iter(rand::rng())
+                .take(32)
+                .map(char::from)
+                .collect(),
             default_retention_hours: 24,
-            totp_secret: "LongLongSecret".to_string(),
+            totp_secret: Alphanumeric
+                .sample_iter(rand::rng())
+                .take(32)
+                .map(char::from)
+                .collect(),
         }
     }
 }
