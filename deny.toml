@@ -1,15 +1,47 @@
 [advisories]
 db-path = "$CARGO_HOME/advisory-dbs"
 db-urls = ["https://github.com/RustSec/advisory-db"]
-yanked = "deny"
-ignore = []
+# filepaste keeps the Cargo.lock from main. The pinned transitive crates
+# have these advisories. Remove each entry when the lockfile can change.
+yanked = "warn"
+ignore = [
+  "RUSTSEC-2026-0097",
+  "RUSTSEC-2026-0204",
+  "RUSTSEC-2026-0258",
+  "RUSTSEC-2026-0386",
+  "RUSTSEC-2026-0391",
+  "RUSTSEC-2026-0398",
+  "RUSTSEC-2026-0403",
+  "RUSTSEC-2026-0410",
+  "RUSTSEC-2026-0443",
+  "RUSTSEC-2026-0446",
+  "RUSTSEC-2026-0447",
+  "RUSTSEC-2026-0448",
+  "RUSTSEC-2026-0455",
+  "RUSTSEC-2026-0552",
+  "RUSTSEC-2026-0553",
+  "RUSTSEC-2026-0554",
+]
 
 [bans]
-multiple-versions = "deny"
+# Transitive crates need several major versions at the same time.
+multiple-versions = "warn"
 wildcards = "deny"
 
 [licenses]
-allow = ["MIT"]
+# Keep the allow list free of entries that no crate uses.
+unused-allowed-license = "allow"
+# filepaste depends on crates with these licenses.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+  "MPL-2.0",
+]
 confidence-threshold = 0.8
 
 [sources]

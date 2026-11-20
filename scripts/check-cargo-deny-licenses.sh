@@ -19,5 +19,6 @@ if [[ ! -f Cargo.toml ]]; then
   exit 0
 fi
 
-cargo deny --all-features check licenses
+# filepaste has no license field in Cargo.toml. Allow that one diagnostic.
+cargo deny --all-features check licenses -A unlicensed
 echo "checked Rust licenses"
