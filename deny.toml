@@ -35,6 +35,8 @@ unused-allowed-license = "allow"
 allow = [
   "MIT",
   "Apache-2.0",
+  # rustls-webpki and aws-lc-rs require ISC for the S3 TLS stack.
+  "ISC",
   "BSD-2-Clause",
   "BSD-3-Clause",
   "Unicode-3.0",
