@@ -6,6 +6,14 @@ pub enum StorageConfig {
     Local {
         root: PathBuf,
     },
+    S3 {
+        bucket: String,
+        region: String,
+        #[serde(default)]
+        key_prefix: String,
+        #[serde(default)]
+        endpoint_url: Option<String>,
+    },
     #[cfg(test)]
     InMemory,
 }

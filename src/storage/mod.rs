@@ -4,6 +4,7 @@ pub mod encryption;
 pub mod in_memory;
 pub mod local;
 pub mod retention;
+pub mod s3;
 
 use std::future::{Ready, ready};
 use std::io;
@@ -177,6 +178,7 @@ macro_rules! register_storage_system {
 
 register_storage_system! {
     Local => local::LocalStorage,
+    S3 => s3::S3Storage,
     #[cfg(test)]
     InMemory => in_memory::InMemoryStorage,
 }
@@ -185,6 +187,12 @@ impl Storage {
     pub async fn init(cfg: config::StorageConfig) -> io::Result<Self> {
         Ok(match cfg {
             config::StorageConfig::Local { root } => Self::Local(local::LocalStorage::new(root)?),
+            config::StorageConfig::S3 {
+                bucket,
+                region,
+                key_prefix,
+                endpoint_url,
+            } => Self::S3(s3::S3Storage::new(bucket, region, key_prefix, endpoint_url).await?),
             #[cfg(test)]
             config::StorageConfig::InMemory => Self::InMemory(in_memory::InMemoryStorage::new()),
         })
