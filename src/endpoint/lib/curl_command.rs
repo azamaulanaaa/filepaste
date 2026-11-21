@@ -128,16 +128,17 @@ fn parse_header(value: &str) -> Result<(String, String), CurlParseError> {
         return Err(CurlParseError::InvalidHeader);
     }
     let header_value = header_value.trim_start();
-    if header_value.bytes().any(|byte| byte == b'\r' || byte == b'\n') {
+    if header_value
+        .bytes()
+        .any(|byte| byte == b'\r' || byte == b'\n')
+    {
         return Err(CurlParseError::InvalidHeader);
     }
     Ok((name.to_owned(), header_value.to_owned()))
 }
 
 fn parse_method(value: &str) -> Result<String, CurlParseError> {
-    if value.is_empty()
-        || value.len() > 16
-        || !value.bytes().all(|byte| byte.is_ascii_alphabetic())
+    if value.is_empty() || value.len() > 16 || !value.bytes().all(|byte| byte.is_ascii_alphabetic())
     {
         return Err(CurlParseError::InvalidMethod);
     }
@@ -172,7 +173,10 @@ fn set_url(slot: &mut Option<String>, value: String) -> Result<(), CurlParseErro
 fn has_empty_authority(value: &str) -> bool {
     match value.split_once("://") {
         Some((_, rest)) => {
-            rest.is_empty() || rest.starts_with('/') || rest.starts_with('?') || rest.starts_with('#')
+            rest.is_empty()
+                || rest.starts_with('/')
+                || rest.starts_with('?')
+                || rest.starts_with('#')
         }
         None => false,
     }
@@ -180,13 +184,13 @@ fn has_empty_authority(value: &str) -> bool {
 
 /// Parse a target URL and require an http or https scheme with a host.
 pub fn parse_target_url(value: &str) -> Result<Url, CurlParseError> {
-    if has_empty_authority(value) {
-        return Err(CurlParseError::MissingHost);
-    }
     let url = Url::parse(value).map_err(|_| CurlParseError::InvalidUrl)?;
     match url.scheme() {
         "http" | "https" => (),
         _ => return Err(CurlParseError::InvalidScheme),
+    }
+    if has_empty_authority(value) {
+        return Err(CurlParseError::MissingHost);
     }
     if !matches!(
         url.host(),
@@ -329,7 +333,7 @@ mod tests {
 
     #[test]
     fn splits_quoted_and_escaped_tokens() {
-        let words = shell_words::split(r#"curl -H 'X-A: one two' "https://example.com/a\ b""#)
+        let words = shell_words::split(r#"curl -H 'X-A: one two' https://example.com/a\ b"#)
             .expect("split command");
         assert_eq!(
             words,
@@ -372,14 +376,15 @@ mod tests {
 
     #[test]
     fn defaults_to_post_with_a_body() {
-        let parsed = parse_curl_command("curl -d hello https://example.com/a").expect("parse command");
+        let parsed =
+            parse_curl_command("curl -d hello https://example.com/a").expect("parse command");
         assert_eq!(parsed.request_method(), "POST");
     }
 
     #[test]
     fn keeps_an_explicit_method_with_a_body() {
-        let parsed =
-            parse_curl_command("curl -X PUT -d hello https://example.com/a").expect("parse command");
+        let parsed = parse_curl_command("curl -X PUT -d hello https://example.com/a")
+            .expect("parse command");
         assert_eq!(parsed.request_method(), "PUT");
     }
 
@@ -405,7 +410,7 @@ mod tests {
     fn rejects_a_url_without_a_host() {
         assert_eq!(
             parse_target_url("http:///path"),
-            Err(CurlParseError::InvalidUrl)
+            Err(CurlParseError::MissingHost)
         );
     }
 
@@ -481,5 +486,64 @@ mod tests {
         let parsed =
             parse_curl_command("curl -o local.txt https://example.com").expect("parse command");
         assert_eq!(parsed.url.as_str(), "https://example.com/");
+    }
+
+    #[test]
+    fn splits_escaped_spaces_and_line_continuations() {
+        let words =
+            shell_words::split("curl https://example.com/a\\ b \\\n  -L").expect("split command");
+        assert_eq!(words, vec!["curl", "https://example.com/a b", "-L"]);
+    }
+
+    #[test]
+    fn normalizes_the_method_to_uppercase() {
+        let parsed = parse_curl_command("curl -X post https://example.com").expect("parse command");
+        assert_eq!(parsed.method.as_deref(), Some("POST"));
+    }
+
+    #[test]
+    fn rejects_a_non_curl_program() {
+        assert_eq!(
+            parse_curl_command("wget https://example.com"),
+            Err(CurlParseError::NotCurl)
+        );
+    }
+
+    #[test]
+    fn rejects_a_header_without_a_colon() {
+        assert_eq!(
+            parse_curl_command("curl -H Invalid https://example.com"),
+            Err(CurlParseError::InvalidHeader)
+        );
+    }
+
+    #[test]
+    fn rejects_an_invalid_max_time() {
+        assert_eq!(
+            parse_curl_command("curl --max-time abc https://example.com"),
+            Err(CurlParseError::InvalidMaxTime)
+        );
+    }
+
+    #[test]
+    fn rejects_a_missing_url() {
+        assert_eq!(
+            parse_curl_command("curl -L"),
+            Err(CurlParseError::MissingUrl)
+        );
+    }
+
+    #[test]
+    fn rejects_a_location_option_with_an_attached_value() {
+        assert!(matches!(
+            parse_curl_command("curl --location=yes https://example.com"),
+            Err(CurlParseError::UnsupportedOption(_))
+        ));
+    }
+
+    #[test]
+    fn accepts_an_ip_literal_target() {
+        let parsed = parse_curl_command("curl https://1.1.1.1/file").expect("parse command");
+        assert_eq!(parsed.url.host_str(), Some("1.1.1.1"));
     }
 }
