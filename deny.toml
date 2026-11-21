@@ -41,6 +41,8 @@ allow = [
   "Zlib",
   "CC0-1.0",
   "MPL-2.0",
+  # The rustls provider in reqwest pulls in ring, which uses ISC code.
+  "ISC",
 ]
 confidence-threshold = 0.8
 
