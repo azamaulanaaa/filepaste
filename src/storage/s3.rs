@@ -474,6 +474,38 @@ mod tests {
         assert!(normalize_prefix("/files").is_err());
     }
 
+    #[tokio::test]
+    async fn new_rejects_empty_bucket() {
+        let err = S3Storage::new(String::new(), "region".to_owned(), String::new(), None)
+            .await
+            .err()
+            .expect("empty bucket must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn new_rejects_empty_region() {
+        let err = S3Storage::new("bucket".to_owned(), String::new(), String::new(), None)
+            .await
+            .err()
+            .expect("empty region must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[tokio::test]
+    async fn new_rejects_empty_endpoint_url() {
+        let err = S3Storage::new(
+            "bucket".to_owned(),
+            "region".to_owned(),
+            String::new(),
+            Some("  ".to_owned()),
+        )
+        .await
+        .err()
+        .expect("empty endpoint must fail");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
     #[test]
     fn convert_listing_maps_files_and_directories() {
         let objects = vec![
