@@ -74,7 +74,7 @@ pub fn bench_encryption(c: &mut Criterion) {
     let mut group = c.benchmark_group("Storage_IO_Performance");
 
     for size in [1, 10, 100].map(|m| m * 1024 * 1024) {
-        group.throughput(Throughput::Bytes(size as u64));
+        group.throughput(Throughput::Bytes(size));
         let path = PathBuf::from(format!("bench_{}", size));
 
         // Benchmark: PUT (Write + Encrypt)
