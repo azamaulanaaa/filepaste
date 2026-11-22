@@ -92,11 +92,12 @@ set TRACE.
 
 ## HTTP API
 
-The service has three routes:
+The service has four routes:
 
 | Method | Path | Auth | Response |
 | --- | --- | --- | --- |
 | `PUT` | `/{filename}` | TOTP and password | The file URL. |
+| `POST` | `/api/remote-upload` | TOTP and password | The file URL. |
 | `GET` | `/{random}/{filename}` | Password | The file. |
 | `GET` | `/` | None | The index page. |
 
@@ -136,6 +137,38 @@ http://127.0.0.1:3000/Ab3dE9fG/cmVwb3J0LnBkZg
 
 The first segment is 8 random alphanumeric characters. The second
 segment is the file name in base64url without padding.
+
+### Remote upload
+
+Send a curl command to `POST /api/remote-upload`. The service runs the
+command, stores the response body, and returns the file URL. Use `AUTH`
+in the same form as `PUT`.
+
+Send the command as plain text:
+
+```bash
+curl -u "$AUTH" \
+  -H 'Content-Type: text/plain' \
+  --data-binary 'curl -L https://example.com/report.pdf' \
+  http://127.0.0.1:3000/api/remote-upload
+```
+
+Or send a JSON object with a `command` field:
+
+```bash
+curl -u "$AUTH" \
+  -H 'Content-Type: application/json' \
+  --data '{"command":"curl https://example.com/report.pdf"}' \
+  http://127.0.0.1:3000/api/remote-upload
+```
+
+The service accepts one URL with an `http` or `https` scheme. It accepts
+the `-X`, `-H`, `-d`, `-u`, `-L`, `--max-time`, and `-o` options. It
+rejects other options with 400. It accepts `-L`, but it does not follow
+redirects. It rejects a target with a private, loopback, link-local, or
+reserved address with 403. The command limit is 8 KiB. The response body
+limit is 16 MiB. The default fetch timeout is 30 seconds. The
+`--max-time` option sets the timeout up to 60 seconds.
 
 ### Download
 
