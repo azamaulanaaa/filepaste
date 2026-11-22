@@ -6,7 +6,7 @@ A client downloads the file with the link.
 
 ## Requirements
 
-- Rust 1.91 or newer. `Cargo.toml` sets `rust-version = "1.91"` and
+- Rust 1.94.1 or newer. `Cargo.toml` sets `rust-version = "1.94.1"` and
   edition 2024.
 - Cargo.
 - `make` for the `Makefile` targets.
