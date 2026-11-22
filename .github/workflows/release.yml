@@ -55,8 +55,7 @@ jobs:
     name: Build container image
     needs: release
     if: startsWith(github.ref, 'refs/tags/v')
-    timeout-minutes: 20
-    uses: ./.github/workflows/release-container-image.yml
+    uses: $/.github/workflows/release-container-image.yml
     permissions:
       contents: read
       packages: write
