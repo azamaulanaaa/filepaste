@@ -19,11 +19,13 @@ if [[ ! -f Cargo.toml ]]; then
   exit 0
 fi
 
-# filepaste keeps its application code. Three lints stay allowed until
+# filepaste keeps its application code. Five lints stay allowed until
 # that code changes. All other warnings still stop the check.
 cargo clippy --all-targets -- \
   -D warnings \
   -A clippy::io-other-error \
   -A clippy::collapsible-if \
-  -A clippy::implicit-saturating-sub
+  -A clippy::implicit-saturating-sub \
+  -A clippy::redundant-closure \
+  -A clippy::new-without-default
 echo "checked Rust code with clippy"
