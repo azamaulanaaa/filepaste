@@ -59,16 +59,21 @@ every run. Remote mode uses no pack cache. `make smolvm-pack` refuses to
 run while `SMOLVM_ADDR` is set. Unset the variable to build a local
 pack.
 
-Each checkout gets an owner token. The token is the first 12 hex
-characters of the SHA-256 of the canonical checkout path. Resource names
-carry it: `smolvm-build-<owner>-<hash>`, `smolvm-run-<owner>-*`,
+Each checkout gets an owner name. In local mode the owner is the first
+12 hex characters of the SHA-256 of the canonical checkout path. Set
+`SMOLVM_OWNER` to use a name instead. Remote mode requires
+`SMOLVM_OWNER`. An empty value stops the command before any API call.
+The value uses lowercase letters, digits, hyphen, and underscore. It
+starts with a letter or a digit. It has at most 16 characters. Use one
+unique value for each repository. Resource names carry the owner:
+`smolvm-build-<owner>-<hash>`, `smolvm-run-<owner>-*`,
 `smolvm-remote-<owner>-*`, and `smolvm-ci-<owner>-<key>.qcow2`. With a
 remote address, `make smolvm-clean` deletes only resources with this
-owner token. It prints the plan and asks one time. `--dry-run` prints
-the plan only. `--yes`, `-y`, or `SMOLVM_CLEAN_ASSUME_YES=1` skips the
-prompt. A non-interactive run without a skip flag stops with an error.
-A moved checkout gets a new token, so its old resources become foreign
-and are reported, not deleted.
+owner. It prints the plan and asks one time. `--dry-run` prints the plan
+only. `--yes`, `-y`, or `SMOLVM_CLEAN_ASSUME_YES=1` skips the prompt. A
+non-interactive run without a skip flag stops with an error. When
+`SMOLVM_OWNER` is unset, a moved checkout gets a new token. Its old
+resources become foreign and are reported, not deleted.
 
 `make hooks` sets the hook path and makes the hooks executable.
 `scripts/check-mise.sh` uses `mise` only to check `mise.toml`. It skips
