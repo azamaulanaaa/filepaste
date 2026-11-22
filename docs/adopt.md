@@ -190,7 +190,7 @@ Add the targets:
 | `format-dockerfmt` | `scripts/format-dockerfmt.sh` |
 | `format-dclint` | `scripts/format-dclint.sh` |
 | `hooks` | Sets the hook path and the file modes. |
-| `release` | `cog bump --auto` |
+| `release` | `scripts/release.sh $(ARGS)` |
 | `smolvm` | `scripts/smolvm.sh` |
 | `smolvm-pack` | `smol/pack-build.sh` |
 | `smolvm-clean` | `scripts/smolvm-clean.sh $(ARGS)` |
@@ -347,6 +347,13 @@ repository settings.
 
 ### Phase 6: Add the release flow
 
+Copy the release scripts:
+
+```bash
+cp -p /tmp/template/scripts/release.sh scripts/release.sh
+cp -p /tmp/template/scripts/release-guest.sh scripts/release-guest.sh
+```
+
 Copy `cog.toml` and adapt it:
 
 ```toml
@@ -375,13 +382,19 @@ Run the release on the branch in `branch_whitelist`:
 make release
 ```
 
-The target runs `cog bump --auto`. It does three steps:
+The target runs `scripts/release.sh`. When smolvm is available, the bump
+runs in the sandbox. The guest clones the repository to a writable
+directory. The host applies the returned bundle. Without a sandbox, auto
+mode prints a warning and runs the bump on the host. Remote mode requires
+`SMOLVM_OWNER` and a reachable server. The release does three steps:
 
 1. It updates `CHANGELOG.md`.
 2. It creates a version commit.
 3. It creates a tag with the `v` prefix.
 
-Do not edit `CHANGELOG.md` by hand.
+Do not edit `CHANGELOG.md` by hand. The host validation expects
+`CHANGELOG.md` and the `v` tag prefix. `--auto` is the default selector.
+A version flag replaces `--auto`.
 
 `.github/workflows/release.yml` runs on a push of a `v*` tag. It creates
 a GitHub Release. A local tag does not start the workflow. Push the tag
@@ -413,17 +426,17 @@ Do not push the tag. The release workflow does not run. The tag gives
 `cog` a start point. `scripts/check-commits.sh` then checks only the
 commits after the tag.
 
-`cog bump --auto` never jumps from `0.y.z` to `1.0.0`. Select the first
-stable version with an explicit command:
+`--auto` never jumps from `0.y.z` to `1.0.0`. A version flag replaces
+`--auto`. Select the first stable version with an explicit command:
 
 ```bash
-cog bump --version 1.0.0
+make release ARGS='--version 1.0.0'
 ```
 
 Run this command to see the next version without a change:
 
 ```bash
-cog bump --dry-run --auto
+make release ARGS='--dry-run'
 ```
 
 ### Phase 7: Optional smolvm sandbox
@@ -574,11 +587,18 @@ is unavailable. Set `SMOLVM_ENABLED=0` to force the host path.
 | `scripts/ci.sh` | copy | Runs the check scripts. |
 | `scripts/check-*.sh` | copy selected | Copy the Phase 3 checks. |
 | `scripts/format*.sh` | copy selected | Copy `format.sh` and pairs. |
+| `scripts/release.sh` | copy | Host release orchestrator. |
+| `scripts/release-guest.sh` | copy | Guest release worker. |
 | `scripts/smolvm*.sh` | optional | Copy the five files. |
 | `smol/*` | optional | Copy the five smol files. |
 | `.gitignore` | merge | Add `.cache/`, `.smolvm/`, and `target/`. |
 | `README.md`, `LICENSE`, `docs/*` | do not copy | Write your own. |
 | `.cache/`, `.smolvm/` | do not copy | Add both to `.gitignore`. |
+
+Local release mode needs `scripts/smolvm-resources.sh` from the
+`scripts/smolvm*.sh` group. Remote mode needs `scripts/smolvm-serve.sh`.
+That file sources the resources file. Remote mode also requires
+`SMOLVM_OWNER`. Host mode needs neither.
 
 ## Check the setup
 
