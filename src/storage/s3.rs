@@ -5,16 +5,51 @@ use std::time::SystemTime;
 
 use actix_web::{Error, FromRequest, HttpRequest, dev::Payload};
 use async_trait::async_trait;
-use aws_config::{BehaviorVersion, Region};
+use aws_credential_types::Credentials;
+use aws_credential_types::provider::{self, ProvideCredentials, error::CredentialsError, future};
 use aws_sdk_s3::Client;
 use aws_sdk_s3::error::{DisplayErrorContext, SdkError};
 use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::operation::head_object::HeadObjectError;
 use aws_sdk_s3::primitives::{ByteStream, DateTime};
 use aws_sdk_s3::types::{CommonPrefix, Object};
+use aws_types::region::Region;
 use serde::{Deserialize, Serialize};
 
 use super::{AsyncFileReader, DirMetadata, FileMetadata, Resource, StorageProvider};
+
+/// Reads AWS credentials from the process environment at request time.
+///
+/// This provider supports environment variables only. It does not read
+/// shared credential files or the instance metadata service.
+#[derive(Debug, Default, Clone, Copy)]
+struct EnvCredentialsProvider;
+
+impl EnvCredentialsProvider {
+    async fn load_credentials(&self) -> provider::Result {
+        let access_key = std::env::var("AWS_ACCESS_KEY_ID")
+            .map_err(|_| CredentialsError::provider_error("AWS_ACCESS_KEY_ID is not set"))?;
+        let secret_key = std::env::var("AWS_SECRET_ACCESS_KEY")
+            .map_err(|_| CredentialsError::provider_error("AWS_SECRET_ACCESS_KEY is not set"))?;
+        let session_token = std::env::var("AWS_SESSION_TOKEN").ok();
+        Ok(Credentials::new(
+            access_key,
+            secret_key,
+            session_token,
+            None,
+            "Environment",
+        ))
+    }
+}
+
+impl ProvideCredentials for EnvCredentialsProvider {
+    fn provide_credentials<'a>(&'a self) -> future::ProvideCredentials<'a>
+    where
+        Self: 'a,
+    {
+        future::ProvideCredentials::new(self.load_credentials())
+    }
+}
 
 /// Request context for S3 storage.
 #[derive(Serialize, Deserialize, Default, Clone, Debug)]
@@ -38,7 +73,7 @@ pub struct S3Storage {
 
 impl S3Storage {
     /// Creates an S3 storage provider from the bucket, region, key prefix, and optional endpoint.
-    /// The AWS default credential chain supplies the access keys.
+    /// Environment variables supply the access keys.
     pub async fn new(
         bucket: String,
         region: String,
@@ -59,8 +94,11 @@ impl S3Storage {
         }
         let prefix = normalize_prefix(&key_prefix)?;
 
-        let mut loader =
-            aws_config::defaults(BehaviorVersion::latest()).region(Region::new(region));
+        let mut builder = aws_sdk_s3::config::Builder::new()
+            .behavior_version_latest()
+            .region(Region::new(region))
+            .credentials_provider(EnvCredentialsProvider)
+            .force_path_style(endpoint_url.is_some());
         if let Some(url) = endpoint_url.as_deref() {
             if url.trim().is_empty() {
                 return Err(io::Error::new(
@@ -68,16 +106,11 @@ impl S3Storage {
                     "S3 endpoint URL must not be empty",
                 ));
             }
-            loader = loader.endpoint_url(url.to_owned());
+            builder = builder.endpoint_url(url.to_owned());
         }
-        let sdk_config = loader.load().await;
-
-        let s3_config = aws_sdk_s3::config::Builder::from(&sdk_config)
-            .force_path_style(endpoint_url.is_some())
-            .build();
 
         Ok(Self {
-            client: Client::from_conf(s3_config),
+            client: Client::from_conf(builder.build()),
             bucket,
             prefix,
         })
