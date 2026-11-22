@@ -69,11 +69,25 @@ root = "./data"
 | `endpoint.host` | `0.0.0.0` | Bind address. |
 | `endpoint.port` | `3000` | Bind port. |
 | `endpoint.index_path` | unset | Path to an index file. |
-| `storage.type` | `local` | Storage type. |
-| `storage.root` | `./data` | Storage root. |
+| `storage.type` | `local` | Storage type: `local` or `s3`. |
+| `storage.root` | `./data` | Storage root for the `local` type. |
+| `storage.bucket` | unset | S3 bucket name for the `s3` type. |
+| `storage.region` | unset | S3 region for the `s3` type. |
+| `storage.key_prefix` | empty | Key prefix for every S3 object. |
+| `storage.endpoint_url` | unset | Endpoint of an S3-compatible service. |
 | `default_retention_hours` | `24` | Retention time. |
 | `password_salt` | random | Salt for key derivation. |
 | `totp_secret` | random | TOTP secret. |
+
+The `s3` storage type stores file content in an S3 bucket. Set
+`storage.bucket` and `storage.region`. The `storage.key_prefix` value is
+optional. Set `storage.endpoint_url` to use an S3-compatible service.
+The service uses path-style access when `storage.endpoint_url` is set.
+
+The S3 provider reads credentials from the environment. Set
+`AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. Set `AWS_SESSION_TOKEN`
+when the credentials include a session token. The service reads the
+credentials at request time.
 
 The `password_salt` and `totp_secret` values are 32 random
 alphanumeric characters. The service creates new values when it writes
@@ -210,6 +224,13 @@ make ci
 in name order. The checks include the Rust test suite, clippy, rustfmt,
 markdownlint, shellcheck, and other repository checks. The
 [check pipeline](docs/ci.md) describes the checks.
+
+The S3 round-trip test is ignored by default. It needs a real bucket.
+Set `FILEPASTE_S3_BUCKET` and `FILEPASTE_S3_REGION` to run it:
+
+```bash
+cargo test --test s3_storage -- --ignored
+```
 
 Run the checks in a smolvm microVM:
 
