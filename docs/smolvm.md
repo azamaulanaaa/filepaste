@@ -1044,6 +1044,42 @@ make smolvm-exec ARGS='touch /workspace/ISOLATION_PROBE'
 
 The last example fails. The mount is read-only.
 
+## Release in the sandbox
+
+`make release` runs `cog bump --auto` in the sandbox when smolvm is
+available. The bump needs a writable repository. The repository mount
+stays read-only. The guest clones `/workspace` to a writable temp
+directory. It runs the bump in the clone. It returns the changelog, one
+version commit, and the tag as a git bundle. The host validates the
+bundle and applies it.
+
+The guest removes the `origin` remote before the bump. The release
+cannot push or fetch. The pre-commit hook runs `scripts/ci.sh` in the
+clone. `SMOLVM_ENABLED=0` stops a second sandbox run.
+
+The host checks the bundle before it changes a ref. It checks the tag,
+the commit parent, the changed path, and the email. It applies the
+commit with `git merge --ff-only`. A failure deletes the fetched tag. It
+resets the host only when the host is on the captured branch at the
+guest commit with a clean worktree. A user commit or a dirty file stays.
+The tag stays local.
+
+Local mode needs a normal checkout, not a linked worktree. The
+repository mount must contain the git directory. Remote mode stages the
+git data and can use a linked worktree. Remote mode requires
+`SMOLVM_OWNER`.
+
+Set `SMOLVM_ENABLED=0` to force the host path. Set
+`SMOLVM_ENABLED=1` to require smolvm. The run then exits 3 when no
+sandbox is available. Set `SMOLVM_ADDR` to use a remote server. See
+[SMOLVM_ENABLED](#smolvm_enabled) and [Remote mode](#remote-mode).
+
+A dry run changes nothing. Run:
+
+```bash
+make release ARGS='--dry-run'
+```
+
 ## Targets
 
 - `make ci` runs the checks. It uses a remote machine when
@@ -1068,6 +1104,12 @@ The last example fails. The mount is read-only.
   [Clean the sandbox](#clean-the-sandbox).
 - `make smolvm-exec` runs one command inside the sandbox. See
   [Run a command in the sandbox](#run-a-command-in-the-sandbox).
+- `make release` runs `cog bump --auto` in the sandbox when smolvm is
+  available. The repository mount stays read-only. The guest clones it
+  to a writable directory. The host applies the returned bundle. In auto
+  mode without a sandbox it prints a warning and runs the bump on the
+  host. With `SMOLVM_ENABLED=1` it exits 3 when no sandbox is available.
+  See [Release in the sandbox](#release-in-the-sandbox).
 - `make smolvm-preflight` probes the host and prints key=value
   lines. Exits 0 when ready, 1 when blocked.
 - `make smolvm-verify` verifies the isolation from inside the guest
@@ -1183,6 +1225,8 @@ These paths are not verified:
   publish. Each run paid full provisioning.
 - The full `make ci` run over HTTP. Live remote runs used
   `make smolvm-exec`.
+- The release path. No live local release and no live remote release
+  ran.
 - Remote cleanup of a real cache base.
 - The isolation check on a KVM host. `make smolvm-verify` has not
   printed `result=isolation_held` there.
