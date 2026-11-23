@@ -201,8 +201,11 @@ curl -u ":$PASSWORD" -OJ \
 ### Index page
 
 `GET /` returns the embedded `static/index.html`. The page uploads one
-file. Set `endpoint.index_path` to a file path to serve another index
-page. The service uses the embedded page when it cannot open that file.
+local file. The page also accepts a curl command or a URL. It sends the
+command to `POST /api/remote-upload`. The remote form uses the same
+TOTP Basic auth and the `X-Retention-Hour` header as the local upload.
+Set `endpoint.index_path` to a file path to serve another index page.
+The service uses the embedded page when it cannot open that file.
 
 ### Retention
 
