@@ -222,13 +222,15 @@ flags `--major`, `--minor`, and `--patch` also replace `--auto`.
 
 ## Limits
 
-A live release has not run in this repository. The check suite checks
-the shell scripts. It does not run a bump. A live local
-`smolvm machine run` release and a live remote release are not tested.
-The pack build and cache reuse path for a release is not tested.
+The release path passed a simulation with a fake `cog`. The remote
+release path ran on `smolvm serve` v1.35.5 with `SMOLVM_SERVE_CACHE=0`.
+The guest ran a cold init with real cocogitto 7.0.0. A live local
+`smolvm machine run` release has not run. The pack build and cache reuse
+path for a release is not tested.
 
-Test the path with a dry run on the release branch before the first
-release. The dry run makes no commit.
+The check suite checks the shell scripts. It does not run a bump. Test
+the path with a dry run on the release branch before the first release.
+The dry run makes no commit.
 
 ## Troubleshooting
 
