@@ -303,6 +303,10 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
         self.inner.delete(path, &ctx.inner).await
     }
 
+    async fn delete_partial(&self, path: &Path, ctx: &Self::Context) -> io::Result<()> {
+        self.inner.delete_partial(path, &ctx.inner).await
+    }
+
     async fn metadata(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<FileMetadata>> {
         let mut meta_opt = self.inner.metadata(path, &ctx.inner).await?;
 

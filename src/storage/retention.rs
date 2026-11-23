@@ -224,6 +224,11 @@ impl<S: StorageProvider> StorageProvider for RetentionStorage<S> {
         self.inner.delete(path, &ctx.inner).await
     }
 
+    async fn delete_partial(&self, path: &Path, ctx: &Self::Context) -> io::Result<()> {
+        // An incomplete object has no retention value. Delete it without a lock check.
+        self.inner.delete_partial(path, &ctx.inner).await
+    }
+
     async fn metadata(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<FileMetadata>> {
         let mut meta_opt = self.inner.metadata(path, &ctx.inner).await?;
         if let Some(meta) = &mut meta_opt {
@@ -285,5 +290,26 @@ mod tests {
             exists.is_some(),
             "File should still exist after failed delete attempt"
         );
+    }
+
+    #[tokio::test]
+    async fn test_delete_partial_ignores_retention() {
+        let inner_storage = in_memory::InMemoryStorage::new();
+        let storage = RetentionStorage::new(inner_storage, Duration::from_hours(5));
+        let context = RetentionContext::<in_memory::InMemoryContext>::default();
+
+        let path = Path::new("partial_file.txt");
+        storage
+            .put(path, Box::pin(Cursor::new(b"partial")), &context)
+            .await
+            .expect("Initial put should succeed");
+
+        storage
+            .delete_partial(path, &context)
+            .await
+            .expect("Partial delete should succeed");
+
+        let exists = storage.get(path, &context).await.unwrap();
+        assert!(exists.is_none(), "Partial file should be deleted");
     }
 }

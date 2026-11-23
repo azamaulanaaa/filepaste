@@ -1,8 +1,10 @@
 pub mod config;
 pub mod handlers;
 pub mod lib;
+pub mod remote_jobs;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use actix_web::{App, HttpServer, web};
 use totp_rs::TOTP;
@@ -21,6 +23,19 @@ where
     let config_data = web::Data::new(config.clone());
     let storage_data = web::Data::new(storage);
     let totp_data = web::Data::new(totp);
+    let jobs_data = web::Data::new(remote_jobs::JobStore::new());
+
+    let prune_jobs = jobs_data.clone();
+    let _prune_handle = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            let removed = prune_jobs.prune_expired();
+            if removed > 0 {
+                tracing::info!("Removed {removed} expired remote upload jobs");
+            }
+        }
+    });
 
     HttpServer::new(move || {
         App::new()
@@ -28,6 +43,7 @@ where
             .app_data(config_data.clone())
             .app_data(storage_data.clone())
             .app_data(totp_data.clone())
+            .app_data(jobs_data.clone())
             .configure(handlers::configure::<S>)
     })
     .bind((config.host, config.port))?
@@ -59,6 +75,7 @@ mod tests {
             App::new()
                 .app_data(storage_data)
                 .app_data(totp_data)
+                .app_data(web::Data::new(remote_jobs::JobStore::new()))
                 .configure(handlers::configure::<InMemoryStorage>),
         )
         .await;

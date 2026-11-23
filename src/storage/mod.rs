@@ -63,6 +63,15 @@ pub trait StorageProvider: Send + Sync {
     ) -> io::Result<u64>;
     async fn get(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<AsyncFileReader>>;
     async fn delete(&self, path: &Path, ctx: &Self::Context) -> io::Result<()>;
+
+    /// Delete an object that an upload did not complete.
+    ///
+    /// The default uses `delete`.
+    /// A storage layer that locks completed files must override this method.
+    async fn delete_partial(&self, path: &Path, ctx: &Self::Context) -> io::Result<()> {
+        self.delete(path, ctx).await
+    }
+
     async fn metadata(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<FileMetadata>>;
     async fn list(&self, path: &Path, ctx: &Self::Context) -> io::Result<Vec<Resource>>;
 }
@@ -137,6 +146,17 @@ macro_rules! register_storage_system {
                     $(
                         $(#[$meta])*
                         (Self::$variant(s), Context::$variant(c)) => s.delete(path, c).await,
+                    )*
+                    _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Storage and Context variant mismatch")),
+                }
+            }
+
+            async fn delete_partial(&self, path: &Path, ctx: &Self::Context) -> io::Result<()> {
+                #[allow(unreachable_patterns, reason = "wildcard unreachable with one variant")]
+                match (self, ctx) {
+                    $(
+                        $(#[$meta])*
+                        (Self::$variant(s), Context::$variant(c)) => s.delete_partial(path, c).await,
                     )*
                     _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Storage and Context variant mismatch")),
                 }
