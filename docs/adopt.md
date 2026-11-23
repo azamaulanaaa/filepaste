@@ -507,7 +507,7 @@ differs from its default. A change to one of these files or values
 builds a new pack.
 
 `SMOLVM_CPUS` sets the CPU count. `SMOLVM_MEMORY_MB` sets the memory in
-MiB. The defaults are 1 CPU and 512 MiB. Each value must be a positive
+MiB. The defaults are 1 CPU and 2048 MiB. Each value must be a positive
 integer.
 
 Set `SMOLVM_ADDR` to use a remote `smolvm serve` server. Set

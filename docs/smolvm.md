@@ -251,7 +251,7 @@ database.
 - `SMOLVM_CPUS` sets the CPU count of the machine. The default value is
   `1`. The value must be a positive integer.
 - `SMOLVM_MEMORY_MB` sets the memory of the machine in MiB. The default
-  value is `1024`. The value must be a positive integer.
+  value is `2048`. The value must be a positive integer.
 
 `SMOLVM_CPUS` and `SMOLVM_MEMORY_MB` also set the resources of the local
 build machine. The scripts stop when either value is not a positive

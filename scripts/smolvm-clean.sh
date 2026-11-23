@@ -188,8 +188,8 @@ if ((remote == 1)); then
       else
         echo "note: the cache base name was not derived." >&2
       fi
-      if [[ "$SMOLVM_CPUS_VALUE" != "1" || "$SMOLVM_MEMORY_MB_VALUE" != "1024" ]]; then
-        if cache_base="$(SMOLVM_CPUS_VALUE=1 SMOLVM_MEMORY_MB_VALUE=1024 serve_cache_base_name "$PWD")"; then
+      if [[ "$SMOLVM_CPUS_VALUE" != "1" || "$SMOLVM_MEMORY_MB_VALUE" != "2048" ]]; then
+        if cache_base="$(SMOLVM_CPUS_VALUE=1 SMOLVM_MEMORY_MB_VALUE=2048 serve_cache_base_name "$PWD")"; then
           plan_bases+=("$cache_base")
         fi
       fi

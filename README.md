@@ -252,7 +252,7 @@ machine has network access. These variables change the run:
 | `SMOLVM_ADDR` | unset | Address of a `smolvm serve` server. |
 | `SMOLVM_OWNER` | path hash | Owner name. Required in remote mode. |
 | `SMOLVM_CPUS` | `1` | CPU count. |
-| `SMOLVM_MEMORY_MB` | `1024` | Memory in MiB. |
+| `SMOLVM_MEMORY_MB` | `2048` | Memory in MiB. |
 
 Set `SMOLVM_ADDR` to run the checks on a remote server. Set
 `SMOLVM_OWNER` to a unique name for the repository. The

@@ -39,7 +39,7 @@ The [smolvm document](smolvm.md) describes this path.
 
 Set `SMOLVM_CPUS` to change the CPU count of the microVM. Set
 `SMOLVM_MEMORY_MB` to change its memory in MiB. The defaults are 1 CPU
-and 1024 MiB. Each value must be a positive integer. The local machine
+and 2048 MiB. Each value must be a positive integer. The local machine
 and the remote machine both use the values. The scripts stop when a
 value is not valid. See the [smolvm document](smolvm.md).
 
