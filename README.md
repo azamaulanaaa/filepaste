@@ -106,12 +106,15 @@ set TRACE.
 
 ## HTTP API
 
-The service has four routes:
+The service has seven routes:
 
 | Method | Path | Auth | Response |
 | --- | --- | --- | --- |
 | `PUT` | `/{filename}` | TOTP and password | The file URL. |
 | `POST` | `/api/remote-upload` | TOTP and password | The file URL. |
+| `POST` | `/api/remote-uploads` | TOTP and password | Job ID and token. |
+| `GET` | `/api/remote-uploads/{id}` | Bearer job token | The job status. |
+| `DELETE` | `/api/remote-uploads/{id}` | Bearer job token | 204. |
 | `GET` | `/{random}/{filename}` | Password | The file. |
 | `GET` | `/` | None | The index page. |
 
@@ -184,6 +187,65 @@ reserved address with 403. The command limit is 8 KiB. The response body
 limit is 16 MiB. The default fetch timeout is 30 seconds. The
 `--max-time` option sets the timeout up to 60 seconds.
 
+### Remote upload jobs
+
+The job API reports the progress of a remote upload. Send the same curl
+command to `POST /api/remote-uploads`:
+
+```bash
+curl -u "$AUTH" \
+  -H 'Content-Type: text/plain' \
+  --data-binary 'curl -L https://example.com/report.pdf' \
+  http://127.0.0.1:3000/api/remote-uploads
+```
+
+The service validates the command and the target address before it
+returns 202. It does not wait for the target response. The response has
+the job ID, the job token, the state, and the received byte count:
+
+```json
+{
+  "id": "6f3a9b2c1d4e5f60718293a4b5",
+  "token": "4b3a2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3",
+  "state": "fetching",
+  "received_bytes": 0
+}
+```
+
+The service returns the token only in this response. Store it in memory.
+Send it as a Bearer token to read the status:
+
+```bash
+curl -H "Authorization: Bearer $JOB_TOKEN" \
+  http://127.0.0.1:3000/api/remote-uploads/$JOB_ID
+```
+
+The status has the state `fetching`, `done`, or `failed`. A `done` status
+has the file URL. A `failed` status has an error message. A later status
+has `total_bytes` when the target sends `Content-Length`. A target
+failure appears as `state: "failed"` with an `error` field. It is not an
+HTTP 502 after the job starts. The service sets `Retry-After: 1` while
+the state is `fetching`. It sets `Cache-Control: no-store` on every
+response.
+
+The service keeps a finished job for one hour. An expired job returns
+404. The jobs are in memory. A restart loses an unfinished job. The
+stored file stays after a restart when the fetch completed.
+
+Cancel a job with `DELETE`:
+
+```bash
+curl -X DELETE -H "Authorization: Bearer $JOB_TOKEN" \
+  http://127.0.0.1:3000/api/remote-uploads/$JOB_ID
+```
+
+The service stops the fetch and deletes a partial file. It keeps a
+completed file. The request returns 204. An unknown job returns 404. A
+missing or bad token returns 401.
+
+The old `POST /api/remote-upload` endpoint stays for compatibility. It
+waits for the fetch and returns the file URL as plain text.
+
 ### Download
 
 Send the password as the Basic auth password:
@@ -202,10 +264,12 @@ curl -u ":$PASSWORD" -OJ \
 
 `GET /` returns the embedded `static/index.html`. The page uploads one
 local file. The page also accepts a curl command or a URL. It sends the
-command to `POST /api/remote-upload`. The remote form uses the same
-TOTP Basic auth and the `X-Retention-Hour` header as the local upload.
-Set `endpoint.index_path` to a file path to serve another index page.
-The service uses the embedded page when it cannot open that file.
+command to `POST /api/remote-uploads` and polls the job status. The page
+shows the received bytes and a percentage when the target size is known.
+The remote form uses the same TOTP Basic auth and the
+`X-Retention-Hour` header as the local upload. Set
+`endpoint.index_path` to a file path to serve another index page. The
+service uses the embedded page when it cannot open that file.
 
 ### Retention
 
