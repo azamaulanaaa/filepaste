@@ -236,7 +236,7 @@
           </div>
 
           <div id="remote-pending" style="display: none">
-            <div>fetching remote file...</div>
+            <div>fetching remote file... <span id="remote-progress"></span></div>
             <div class="actions">
               <button onclick="resetUI()">[ abort_fetch ]</button>
             </div>
@@ -285,6 +285,9 @@
       const zone = document.getElementById("drop-zone");
       let xhr = null;
       let remoteXhr = null;
+      let remoteJob = null;
+      let remoteTimer = null;
+      let remotePoll = null;
       let pendingFile = null;
 
       window.ondragover = (e) => {
@@ -321,6 +324,18 @@
       }
 
       function cancelRemote() {
+        clearTimeout(remoteTimer);
+        remoteTimer = null;
+        if (remotePoll) {
+          const controller = remotePoll;
+          remotePoll = null;
+          controller.abort();
+        }
+        if (remoteJob) {
+          const job = remoteJob;
+          remoteJob = null;
+          cancelRemoteJob(job);
+        }
         if (remoteXhr) {
           const request = remoteXhr;
           remoteXhr = null;
@@ -331,11 +346,45 @@
         document.getElementById("remote-totp").value = "";
         document.getElementById("remote-pw").value = "";
         document.getElementById("remote-retention-select").value = "24";
+        document.getElementById("remote-progress").textContent = "";
         document.getElementById("remote-error").textContent = "";
         document.getElementById("remote-error").style.display = "none";
         document.getElementById("remote-form").style.display = "block";
         document.getElementById("remote-pending").style.display = "none";
         document.getElementById("remote-submit").disabled = false;
+      }
+
+      function cancelRemoteJob(job) {
+        fetch("/api/remote-uploads/" + encodeURIComponent(job.id), {
+          method: "DELETE",
+          headers: { Authorization: "Bearer " + job.token },
+        }).catch(() => {});
+      }
+
+      function remoteSize(bytes) {
+        if (bytes < 1024) return bytes + " b";
+        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " kb";
+        return (bytes / 1024 / 1024).toFixed(1) + " mb";
+      }
+
+      function showRemoteProgress(job) {
+        const received = job.received_bytes || 0;
+        let text = remoteSize(received);
+        if (job.total_bytes != null) {
+          const percent = job.total_bytes > 0
+            ? Math.min(100, Math.floor((received / job.total_bytes) * 100))
+            : 100;
+          text = percent + "% (" + remoteSize(received) + " / " +
+            remoteSize(job.total_bytes) + ")";
+        }
+        document.getElementById("remote-progress").textContent = text;
+      }
+
+      function showRemoteFailure(message) {
+        document.getElementById("remote-pending").style.display = "none";
+        document.getElementById("remote-form").style.display = "block";
+        document.getElementById("remote-submit").disabled = false;
+        showRemoteError(message);
       }
 
       function showRemoteError(message) {
@@ -355,7 +404,7 @@
       }
 
       function startRemoteUpload() {
-        if (remoteXhr) return;
+        if (remoteXhr || remoteJob) return;
 
         const typed = document.getElementById("remote-command").value.trim();
         const totp = document.getElementById("remote-totp").value;
@@ -378,7 +427,7 @@
 
         const request = new XMLHttpRequest();
         remoteXhr = request;
-        request.open("POST", "/api/remote-upload", true);
+        request.open("POST", "/api/remote-uploads", true);
         request.setRequestHeader("Content-Type", "text/plain; charset=utf-8");
         request.setRequestHeader("X-Retention-Hour", retentionHours);
         request.setRequestHeader(
@@ -389,17 +438,26 @@
         request.onload = () => {
           if (remoteXhr !== request) return;
           remoteXhr = null;
-          document.getElementById("remote-pending").style.display = "none";
           if (request.status >= 200 && request.status < 300) {
-            showResult(request.responseText.trim());
-          } else {
-            document.getElementById("remote-form").style.display = "block";
-            document.getElementById("remote-submit").disabled = false;
-            const detail = request.responseText.trim();
-            showRemoteError(
-              "HTTP " + request.status + (detail ? "\n" + detail : ""),
-            );
+            let job = null;
+            try {
+              job = JSON.parse(request.responseText);
+            } catch (_) {}
+            if (!job || !job.id || !job.token) {
+              showRemoteFailure("Invalid job response.");
+              return;
+            }
+            remoteJob = job;
+            showRemoteProgress(job);
+            pollRemoteJob(job);
+            return;
           }
+          document.getElementById("remote-pending").style.display = "none";
+          document.getElementById("remote-form").style.display = "block";
+          document.getElementById("remote-submit").disabled = false;
+          showRemoteError(
+            "HTTP " + request.status + remoteErrorDetail(request),
+          );
         };
 
         request.onerror = () => {
@@ -413,8 +471,72 @@
 
         document.getElementById("remote-form").style.display = "none";
         document.getElementById("remote-pending").style.display = "block";
+        document.getElementById("remote-progress").textContent = "0 b";
         document.getElementById("remote-submit").disabled = true;
         request.send(command);
+      }
+
+      function remoteErrorDetail(request) {
+        const text = request.responseText.trim();
+        try {
+          const data = JSON.parse(request.responseText);
+          if (data && data.error) return "\n" + data.error;
+        } catch (_) {}
+        return text ? "\n" + text : "";
+      }
+
+      function pollRemoteJob(job) {
+        remoteTimer = setTimeout(() => {
+          remoteTimer = null;
+          if (!remoteJob || remoteJob.id !== job.id) return;
+          const controller = new AbortController();
+          remotePoll = controller;
+          fetch("/api/remote-uploads/" + encodeURIComponent(job.id), {
+            headers: { Authorization: "Bearer " + job.token },
+            cache: "no-store",
+            signal: controller.signal,
+          })
+            .then(async (response) => {
+              let data = null;
+              try {
+                data = await response.json();
+              } catch (_) {}
+              if (!response.ok) {
+                const detail = data && data.error ? ": " + data.error : "";
+                throw new Error("HTTP " + response.status + detail);
+              }
+              return data;
+            })
+            .then((data) => {
+              if (remotePoll === controller) remotePoll = null;
+              if (!remoteJob || remoteJob.id !== job.id) return;
+              if (!data || !data.state) {
+                throw new Error("Invalid job status.");
+              }
+              showRemoteProgress(data);
+              if (data.state === "done") {
+                remoteJob = null;
+                document.getElementById("remote-pending").style.display =
+                  "none";
+                showResult(data.url);
+              } else if (data.state === "failed") {
+                remoteJob = null;
+                showRemoteFailure(data.error || "Fetch failed.");
+              } else {
+                pollRemoteJob(job);
+              }
+            })
+            .catch((error) => {
+              if (remotePoll === controller) remotePoll = null;
+              if (error.name === "AbortError") return;
+              if (!remoteJob || remoteJob.id !== job.id) return;
+              remoteJob = null;
+              cancelRemoteJob(job);
+              showRemoteFailure(
+                error.message || "Fetch failed. Server unreachable.",
+              );
+            });
+        }, 500);
       }
 
       function startUpload() {
