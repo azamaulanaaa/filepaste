@@ -3,9 +3,6 @@ name: Release Container Image
 # Run after the Release workflow creates a GitHub Release.
 on:
   workflow_call:
-    secrets:
-      GITHUB_TOKEN:
-        required: true
   workflow_dispatch:
 
 concurrency:
