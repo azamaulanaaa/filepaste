@@ -39,6 +39,9 @@ jobs:
           - name: jactionlint
             install_args: jactionlint
             script: scripts/check-jactionlint.sh
+          - name: workflow-secrets
+            install_args: ''
+            script: scripts/check-workflow-secrets.sh
           - name: bash
             install_args: shellcheck
             script: scripts/check-bash.sh
