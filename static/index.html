@@ -64,7 +64,7 @@
         text-align: center;
         font-weight: normal;
       }
-      #staging, #ui, #out {
+      #staging, #remote, #ui, #out {
         display: none;
       }
       .actions {
@@ -100,8 +100,39 @@
       }
 
       input:focus,
-      select:focus {
+      select:focus,
+      textarea:focus {
         border-color: #000;
+      }
+
+      textarea {
+        font-family: monospace;
+        padding: 8px;
+        border: 1px solid #ccc;
+        outline: none;
+        width: 340px;
+        box-sizing: border-box;
+        background: #fff;
+        color: #000;
+        margin: 5px 0;
+        resize: vertical;
+        text-align: left;
+      }
+
+      label {
+        font-size: 0.8em;
+        opacity: 0.6;
+      }
+
+      .error {
+        max-width: 340px;
+        margin: 10px auto 0;
+        padding: 8px;
+        border: 1px solid #000;
+        font-size: 0.8em;
+        text-align: left;
+        white-space: pre-wrap;
+        word-break: break-word;
       }
 
       .input-group {
@@ -120,6 +151,9 @@
           <button onclick="document.getElementById('file-input').click()">
             [ select_file ]
           </button>
+          <div style="margin-top: 15px">
+            <button onclick="stageRemote()">[ fetch_url ]</button>
+          </div>
         </div>
 
         <div id="staging" style="text-align: center">
@@ -155,6 +189,57 @@
           <div class="actions">
             <button onclick="startUpload()">[ start_upload ]</button>
             <button onclick="resetUI()">[ cancel ]</button>
+          </div>
+        </div>
+
+        <div id="remote" style="text-align: center">
+          <div id="remote-form">
+            <div class="input-group">
+              <label for="remote-command">curl command or URL</label>
+              <textarea
+                id="remote-command"
+                rows="3"
+                placeholder="curl -L https://example.com/report.pdf"
+                spellcheck="false"
+              ></textarea>
+              <input
+                type="text"
+                id="remote-totp"
+                placeholder="6-digit totp"
+                maxlength="6"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                autocomplete="one-time-code"
+              >
+              <input
+                type="password"
+                id="remote-pw"
+                placeholder="auth password"
+                autocomplete="off"
+              >
+              <select id="remote-retention-select">
+                <option value="6">6 hours</option>
+                <option value="24" selected>24 hours</option>
+                <option value="72">3 days</option>
+                <option value="168">7 days</option>
+              </select>
+            </div>
+
+            <div id="remote-error" class="error" style="display: none"></div>
+
+            <div class="actions">
+              <button id="remote-submit" onclick="startRemoteUpload()">
+                [ start_fetch ]
+              </button>
+              <button onclick="resetUI()">[ cancel ]</button>
+            </div>
+          </div>
+
+          <div id="remote-pending" style="display: none">
+            <div>fetching remote file...</div>
+            <div class="actions">
+              <button onclick="resetUI()">[ abort_fetch ]</button>
+            </div>
           </div>
         </div>
 
@@ -199,6 +284,7 @@
     <script>
       const zone = document.getElementById("drop-zone");
       let xhr = null;
+      let remoteXhr = null;
       let pendingFile = null;
 
       window.ondragover = (e) => {
@@ -216,6 +302,7 @@
 
       function stageFile(file) {
         if (!file) return;
+        cancelRemote();
         pendingFile = file;
         document.getElementById("st-fn").textContent = file.name;
         document.getElementById("st-fs").textContent =
@@ -225,6 +312,109 @@
         document.getElementById("idle").style.display = "none";
         document.getElementById("staging").style.display = "block";
         document.getElementById("auth-totp").focus(); // Focus TOTP first
+      }
+
+      function stageRemote() {
+        document.getElementById("idle").style.display = "none";
+        document.getElementById("remote").style.display = "block";
+        document.getElementById("remote-command").focus();
+      }
+
+      function cancelRemote() {
+        if (remoteXhr) {
+          const request = remoteXhr;
+          remoteXhr = null;
+          request.abort();
+        }
+        document.getElementById("remote").style.display = "none";
+        document.getElementById("remote-command").value = "";
+        document.getElementById("remote-totp").value = "";
+        document.getElementById("remote-pw").value = "";
+        document.getElementById("remote-retention-select").value = "24";
+        document.getElementById("remote-error").textContent = "";
+        document.getElementById("remote-error").style.display = "none";
+        document.getElementById("remote-form").style.display = "block";
+        document.getElementById("remote-pending").style.display = "none";
+        document.getElementById("remote-submit").disabled = false;
+      }
+
+      function showRemoteError(message) {
+        const errorEl = document.getElementById("remote-error");
+        errorEl.textContent = message;
+        errorEl.style.display = "block";
+      }
+
+      function showResult(serverUrl) {
+        const linkEl = document.getElementById("ln");
+        linkEl.href = serverUrl;
+        linkEl.textContent = serverUrl;
+        document.getElementById("staging").style.display = "none";
+        document.getElementById("remote").style.display = "none";
+        document.getElementById("ui").style.display = "none";
+        document.getElementById("out").style.display = "block";
+      }
+
+      function startRemoteUpload() {
+        if (remoteXhr) return;
+
+        const typed = document.getElementById("remote-command").value.trim();
+        const totp = document.getElementById("remote-totp").value;
+        const pw = document.getElementById("remote-pw").value;
+        const retentionHours =
+          document.getElementById("remote-retention-select").value;
+
+        if (totp.length !== 6 || isNaN(totp)) {
+          showRemoteError("Enter a valid 6-digit TOTP code.");
+          return;
+        }
+        if (!typed) {
+          showRemoteError("Enter a curl command or URL.");
+          return;
+        }
+
+        const command = /^https?:\/\//i.test(typed) ? "curl " + typed : typed;
+
+        document.getElementById("remote-error").style.display = "none";
+
+        const request = new XMLHttpRequest();
+        remoteXhr = request;
+        request.open("POST", "/api/remote-upload", true);
+        request.setRequestHeader("Content-Type", "text/plain; charset=utf-8");
+        request.setRequestHeader("X-Retention-Hour", retentionHours);
+        request.setRequestHeader(
+          "Authorization",
+          "Basic " + btoa(totp + ":" + pw),
+        );
+
+        request.onload = () => {
+          if (remoteXhr !== request) return;
+          remoteXhr = null;
+          document.getElementById("remote-pending").style.display = "none";
+          if (request.status >= 200 && request.status < 300) {
+            showResult(request.responseText.trim());
+          } else {
+            document.getElementById("remote-form").style.display = "block";
+            document.getElementById("remote-submit").disabled = false;
+            const detail = request.responseText.trim();
+            showRemoteError(
+              "HTTP " + request.status + (detail ? "\n" + detail : ""),
+            );
+          }
+        };
+
+        request.onerror = () => {
+          if (remoteXhr !== request) return;
+          remoteXhr = null;
+          document.getElementById("remote-pending").style.display = "none";
+          document.getElementById("remote-form").style.display = "block";
+          document.getElementById("remote-submit").disabled = false;
+          showRemoteError("Fetch failed. Server unreachable.");
+        };
+
+        document.getElementById("remote-form").style.display = "none";
+        document.getElementById("remote-pending").style.display = "block";
+        document.getElementById("remote-submit").disabled = true;
+        request.send(command);
       }
 
       function startUpload() {
@@ -289,6 +479,7 @@
 
       function resetUI() {
         pendingFile = null;
+        cancelRemote();
         document.getElementById("file-input").value = "";
         document.getElementById("idle").style.display = "block";
         document.getElementById("staging").style.display = "none";
