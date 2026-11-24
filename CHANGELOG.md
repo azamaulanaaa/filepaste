@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## v0.5.0 - 2026-11-24
+#### Features
+- (**endpoint**) persist remote upload jobs - (1655220) - Aza Maulana
+- (**storage**) add single PutObject upload mode - (a1bc4ba) - Aza Maulana
+#### Bug Fixes
+- (**storage**) abort stale multipart uploads - (3c5571c) - Aza Maulana
+- (**storage**) stream S3 uploads - (7a1ca38) - Aza Maulana
+
+- - -
+
 ## v0.4.0 - 2026-11-23
 #### Features
 - (**api**) add remote upload jobs - (f17f4c1) - Aza Maulana
