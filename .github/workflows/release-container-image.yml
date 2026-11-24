@@ -1,12 +1,25 @@
 name: Release Container Image
 
-# Run after the Release workflow creates a GitHub Release.
+# Build the container image from the assets of one release tag.
 on:
   workflow_call:
+    inputs:
+      tag:
+        description: Release tag that holds the Linux assets.
+        required: true
+        type: string
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag that holds the Linux assets.
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-container-image
+  group: ${{ github.workflow }}-${{ inputs.tag }}-container-image
   cancel-in-progress: false
 
 env:
@@ -21,8 +34,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      tag: ${{ steps.get_tag.outputs.tag }}
     strategy:
       fail-fast: false
       matrix:
@@ -35,18 +46,11 @@ jobs:
             platform: linux/arm64
 
     steps:
-      - name: Checkout repository
+      - name: Check out the release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.tag }}
           persist-credentials: false
-
-      - name: Get latest release tag
-        id: get_tag
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          tag="$(gh release list --limit 1 --json tagName --jq '.[0].tagName')"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
@@ -58,30 +62,49 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download Release Asset
+      - name: Download the release asset
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ steps.get_tag.outputs.tag }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
           TARGET: ${{ matrix.target }}
         run: |
-          if gh release download "$TAG" --pattern "*$TARGET.tar.xz" --dir download; then
-            echo "Downloaded the asset for $TARGET."
-          fi
-
-      - name: Extract Binary
-        env:
-          TARGET: ${{ matrix.target }}
-          BINARY_NAME: ${{ env.BINARY_NAME }}
-        run: |
-          cd download
-          tar -xvf -- *"$TARGET"*.tar.xz
-          found_bin="$(find . -name "$BINARY_NAME" -type f | head -n 1)"
-          if [ -z "$found_bin" ]; then
-            echo "Could not find the binary $BINARY_NAME in the extracted files." >&2
+          set -euo pipefail
+          mkdir -p download
+          asset="${BINARY_NAME}-${TARGET}.tar.xz"
+          if ! gh release download "$TAG" --pattern "$asset" --dir download; then
+            echo "error: The release asset ${asset} is missing from tag ${TAG}." >&2
+            echo "error: Check the Release workflow result for that tag." >&2
             exit 1
           fi
-          mv "$found_bin" "../$BINARY_NAME"
-          chmod +x "../$BINARY_NAME"
+          if [[ ! -f "download/${asset}" ]]; then
+            echo "error: The release asset ${asset} is missing from tag ${TAG}." >&2
+            echo "error: Check the Release workflow result for that tag." >&2
+            exit 1
+          fi
+
+      - name: Extract the binary
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(download/*.tar.xz)
+          if ((${#archives[@]} == 0)); then
+            echo "error: No release archive is in the download directory." >&2
+            exit 1
+          fi
+          if ((${#archives[@]} > 1)); then
+            echo "error: More than one release archive is in the download directory." >&2
+            printf '%s\n' "${archives[@]}" >&2
+            exit 1
+          fi
+          tar -xJf "${archives[0]}" -C download
+          found_bin="$(find download -type f -name "$BINARY_NAME" -print -quit)"
+          if [[ -z "$found_bin" ]]; then
+            echo "error: The binary ${BINARY_NAME} is missing from the release archive." >&2
+            exit 1
+          fi
+          mv "$found_bin" "$BINARY_NAME"
+          chmod +x "$BINARY_NAME"
 
       - name: Build and push intermediate image
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
@@ -90,7 +113,7 @@ jobs:
           file: .github/Dockerfile
           platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.get_tag.outputs.tag }}-${{ matrix.arch }}
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.tag }}-${{ matrix.arch }}
           build-args: |
             BINARY_NAME=${{ env.BINARY_NAME }}
 
@@ -99,7 +122,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
+      contents: read
       packages: write
+
     steps:
       - name: Log in to the Container registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -108,15 +133,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Create and Push Manifest
+      - name: Create and push manifest
         env:
           BASE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          TAG: ${{ needs.build-arch-images.outputs.tag }}
+          TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           docker buildx imagetools create -t "${BASE}:${TAG}" \
             "${BASE}:${TAG}-amd64" \
             "${BASE}:${TAG}-arm64"
-          docker buildx imagetools create -t "${BASE}:latest" \
-            "${BASE}:${TAG}-amd64" \
-            "${BASE}:${TAG}-arm64"
-          echo "Pushed ${BASE}:${TAG} and ${BASE}:latest."
+          latest="$(gh release list --limit 1 --json tagName --jq '.[0].tagName')"
+          if [[ "$TAG" == "$latest" ]]; then
+            docker buildx imagetools create -t "${BASE}:latest" \
+              "${BASE}:${TAG}-amd64" \
+              "${BASE}:${TAG}-arm64"
+            echo "Pushed ${BASE}:${TAG} and ${BASE}:latest."
+          else
+            echo "Tag ${TAG} is older than the newest release ${latest}. The :latest tag was not updated."
+          fi
