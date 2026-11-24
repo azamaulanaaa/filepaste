@@ -15,8 +15,8 @@ make release
 
 The first command shows the next version and changes nothing. The
 second updates `CHANGELOG.md`, creates a version commit, and creates a
-tag with the `v` prefix. See [Make a release](#make-a-release) for the
-full steps.
+tag with the `v` prefix. Push the tag to start the Release workflow.
+See [Make a release](#make-a-release) for the full steps.
 
 ## Commit format
 
@@ -91,9 +91,9 @@ replaces `--auto`. The command has three steps:
 2. It creates a version commit.
 3. It creates a tag with the `v` prefix.
 
-No CI release job exists. The release runs on the machine that runs
-`make release`. When smolvm is available, the bump runs in a sandbox
-microVM. See [Sandbox release flow](#sandbox-release-flow).
+The tag stays local. Push the tag to start the Release workflow. When
+smolvm is available, the bump runs in a sandbox microVM. See
+[Sandbox release flow](#sandbox-release-flow).
 
 ## Sandbox release flow
 
@@ -162,28 +162,48 @@ Remote mode requires `SMOLVM_OWNER` and a reachable address. The owner
 rules and the resource defaults come from the smolvm helpers. See the
 [smolvm documentation](smolvm.md#remote-mode).
 
-## Optional GitHub Release
+## GitHub Release
 
-A GitHub Release is optional. The local `make release` flow stays the
-default. It updates the changelog, creates the version commit, and creates
-the tag. It does not create a GitHub Release.
-
-The workflow `.github/workflows/release.yml` creates the release. It runs
-only when you opt in. To opt in, push the version tag to GitHub. The tag
-must match `v*`, for example `v1.2.3`. Push the tag that `make release`
-created:
+`make release` creates the version commit and the tag. The tag stays
+local. Push the tag to start the Release workflow:
 
 ```bash
 git push origin v1.2.3
 ```
 
-The workflow then creates a GitHub Release for that tag. It uses the
-changelog section for that version as the release notes. If the changelog
-has no section for the version, the workflow uses the tag name as the
-release title.
+The workflow `.github/workflows/release.yml` runs when you push a tag
+that matches `v*`. It uses cargo-dist to build the release assets. Then
+it creates a GitHub Release for the tag and uploads the assets. The
+release notes come from the `CHANGELOG.md` section for the version.
 
-To stay local, do not push the tag. The workflow does not run. No GitHub
-Release is created.
+The workflow builds these Linux assets:
+
+- `filepaste-x86_64-unknown-linux-gnu.tar.xz`
+- `filepaste-aarch64-unknown-linux-gnu.tar.xz`
+
+It also builds the macOS and Windows assets that `dist-workspace.toml`
+configures.
+
+Do not push the tag to keep the release local. The workflow does not
+run. No GitHub Release is created.
+
+## Container image
+
+The Release workflow calls
+`.github/workflows/release-container-image.yml` after the `host` job
+succeeds. The container workflow downloads the two Linux assets from the
+GitHub Release. It builds one image for each architecture.
+
+The workflow pushes these tags:
+
+- `ghcr.io/<owner>/<repository>:<tag>-amd64`
+- `ghcr.io/<owner>/<repository>:<tag>-arm64`
+- `ghcr.io/<owner>/<repository>:<tag>`
+- `ghcr.io/<owner>/<repository>:latest`
+
+The workflow updates `:latest` only when `<tag>` is the newest release.
+When you push an older tag, the workflow pushes the tag image and keeps
+`:latest` unchanged. It prints a message that says the tag is older.
 
 ## Dry run
 
@@ -207,7 +227,7 @@ prints a short message and exits 0. The host repository does not change.
 
 ## First release
 
-The repository has no tag. Select the first version before the first
+A new repository has no tag. Select the first version before the first
 release. `--auto` is the default selector. A version flag replaces
 `--auto`. Run one of these commands:
 
@@ -253,6 +273,13 @@ git commit --amend
 ```
 
 Do not use `--no-verify`.
+
+### The release asset is missing
+
+The container workflow stops when an asset is missing from the release.
+The error names the asset and the tag. Check the Release workflow run
+for the tag. The `host` job uploads the assets. Re-run the Release
+workflow for the tag, then run the container workflow again.
 
 ### The Markdown check skips `CHANGELOG.md`
 

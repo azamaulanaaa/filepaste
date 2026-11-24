@@ -339,7 +339,14 @@ make release
 The target runs `scripts/release.sh`. The script runs `cog bump` with
 `--auto` by default. It updates `CHANGELOG.md`, creates a version
 commit, and creates a tag with the `v` prefix. The tag stays local. Push
-the tag to start the optional GitHub Release workflow.
+the tag to start the Release workflow. The workflow uses cargo-dist to
+build the release assets and creates the GitHub Release. The container
+workflow downloads the Linux assets and pushes the container images. It
+updates `:latest` only for the newest release.
+
+The release builds the Linux assets
+`filepaste-x86_64-unknown-linux-gnu.tar.xz` and
+`filepaste-aarch64-unknown-linux-gnu.tar.xz`.
 
 The script uses a smolvm sandbox when it can. The guest clones the
 repository to a writable directory and runs the bump there. The guest
@@ -354,8 +361,8 @@ Show the next version and change nothing:
 make release ARGS='--dry-run'
 ```
 
-The [release workflow](docs/release.md) describes the checks and the
-GitHub Release step.
+The [release workflow](docs/release.md) describes the release and the
+container image.
 
 ## License
 
