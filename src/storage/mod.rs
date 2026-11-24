@@ -72,6 +72,13 @@ pub trait StorageProvider: Send + Sync {
         self.delete(path, ctx).await
     }
 
+    /// Abort incomplete multipart uploads that are older than the expiry.
+    ///
+    /// The default does nothing and returns zero.
+    async fn cleanup_stale_multipart_uploads(&self, _ctx: &Self::Context) -> io::Result<u64> {
+        Ok(0)
+    }
+
     async fn metadata(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<FileMetadata>>;
     async fn list(&self, path: &Path, ctx: &Self::Context) -> io::Result<Vec<Resource>>;
 }
@@ -162,6 +169,17 @@ macro_rules! register_storage_system {
                 }
             }
 
+            async fn cleanup_stale_multipart_uploads(&self, ctx: &Self::Context) -> io::Result<u64> {
+                #[allow(unreachable_patterns, reason = "wildcard unreachable with one variant")]
+                match (self, ctx) {
+                    $(
+                        $(#[$meta])*
+                        (Self::$variant(s), Context::$variant(c)) => s.cleanup_stale_multipart_uploads(c).await,
+                    )*
+                    _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Storage and Context variant mismatch")),
+                }
+            }
+
             async fn metadata(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<FileMetadata>> {
                 #[allow(unreachable_patterns, reason = "wildcard unreachable with one variant")]
                 match (self, ctx) {
@@ -212,7 +230,17 @@ impl Storage {
                 region,
                 key_prefix,
                 endpoint_url,
-            } => Self::S3(s3::S3Storage::new(bucket, region, key_prefix, endpoint_url).await?),
+                multipart_upload_expiry_hours,
+            } => Self::S3(
+                s3::S3Storage::new_with_multipart_expiry(
+                    bucket,
+                    region,
+                    key_prefix,
+                    endpoint_url,
+                    multipart_upload_expiry_hours,
+                )
+                .await?,
+            ),
             #[cfg(test)]
             config::StorageConfig::InMemory => Self::InMemory(in_memory::InMemoryStorage::new()),
         })

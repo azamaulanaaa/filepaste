@@ -77,6 +77,7 @@ root = "./data"
 | `storage.region` | unset | S3 region for the `s3` type. |
 | `storage.key_prefix` | empty | Key prefix for every S3 object. |
 | `storage.endpoint_url` | unset | Endpoint of an S3-compatible service. |
+| `storage.multipart_upload_expiry_hours` | `24` | Incomplete upload expiry. |
 | `default_retention_hours` | `24` | Retention time. |
 | `password_salt` | random | Salt for key derivation. |
 | `totp_secret` | random | TOTP secret. |
@@ -94,6 +95,18 @@ credentials at request time.
 The provider uploads an object in parts of 8 MiB and keeps at most one
 part in memory. S3 accepts at most 10000 parts, so the largest object is
 about 78 GiB.
+
+The periodic GC run aborts incomplete multipart uploads that are older
+than `storage.multipart_upload_expiry_hours`. The default value is 24
+hours. A positive value is at least 1 hour. Set the value to `0` to
+disable cleanup. The cleanup needs the `s3:ListBucketMultipartUploads`
+and `s3:AbortMultipartUpload` permissions.
+
+A non-empty `storage.key_prefix` gives strict isolation because the
+cleanup aborts only uploads under `<prefix>/`. With an empty prefix, the
+cleanup accepts only keys with the service shape: 8 ASCII alphanumeric
+characters, a slash, and a Base64Url filename. The cleanup logs skipped
+foreign keys at debug level.
 
 The `password_salt` and `totp_secret` values are 32 random
 alphanumeric characters. The service creates new values when it writes

@@ -1,7 +1,7 @@
 use std::future::{Ready, ready};
 use std::io;
 use std::path::{Component, Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use actix_web::{Error, FromRequest, HttpRequest, dev::Payload};
 use async_trait::async_trait;
@@ -9,13 +9,16 @@ use aws_credential_types::Credentials;
 use aws_credential_types::provider::{self, ProvideCredentials, error::CredentialsError, future};
 use aws_sdk_s3::Client;
 use aws_sdk_s3::error::{DisplayErrorContext, SdkError};
+use aws_sdk_s3::operation::abort_multipart_upload::AbortMultipartUploadError;
 use aws_sdk_s3::operation::get_object::GetObjectError;
 use aws_sdk_s3::operation::head_object::HeadObjectError;
 use aws_sdk_s3::primitives::{ByteStream, DateTime};
 use aws_sdk_s3::types::{CommonPrefix, CompletedMultipartUpload, CompletedPart, Object};
 use aws_types::region::Region;
+use base64ct::{Base64UrlUnpadded, Encoding};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
+use tracing::{debug, info, warn};
 
 use super::{AsyncFileReader, DirMetadata, FileMetadata, Resource, StorageProvider};
 
@@ -70,6 +73,7 @@ pub struct S3Storage {
     client: Client,
     bucket: String,
     prefix: String,
+    multipart_expiry: Option<Duration>,
 }
 
 impl S3Storage {
@@ -80,6 +84,27 @@ impl S3Storage {
         region: String,
         key_prefix: String,
         endpoint_url: Option<String>,
+    ) -> io::Result<Self> {
+        Self::new_with_multipart_expiry(
+            bucket,
+            region,
+            key_prefix,
+            endpoint_url,
+            DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS,
+        )
+        .await
+    }
+
+    /// Creates an S3 storage provider with an incomplete-upload expiry in hours.
+    ///
+    /// A value of zero disables cleanup.
+    /// A positive value is at least one hour.
+    pub async fn new_with_multipart_expiry(
+        bucket: String,
+        region: String,
+        key_prefix: String,
+        endpoint_url: Option<String>,
+        multipart_upload_expiry_hours: u64,
     ) -> io::Result<Self> {
         if bucket.trim().is_empty() {
             return Err(io::Error::new(
@@ -114,8 +139,54 @@ impl S3Storage {
             client: Client::from_conf(builder.build()),
             bucket,
             prefix,
+            multipart_expiry: multipart_expiry(multipart_upload_expiry_hours),
         })
     }
+
+    /// Returns true when the key belongs to this service.
+    fn key_belongs_to_service(&self, key: &str) -> bool {
+        if self.prefix.is_empty() {
+            return is_app_key(key);
+        }
+        key.strip_prefix(&self.prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+    }
+}
+
+/// Default expiry for incomplete multipart uploads, in hours.
+pub const DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS: u64 = 24;
+
+/// Converts an expiry in hours into a cleanup window.
+///
+/// A value of zero disables cleanup.
+/// A positive value is at least one hour.
+fn multipart_expiry(hours: u64) -> Option<Duration> {
+    if hours == 0 {
+        None
+    } else {
+        let seconds = hours.max(1).saturating_mul(60 * 60);
+        Some(Duration::from_secs(seconds))
+    }
+}
+
+/// Returns true when the key uses the service key shape.
+///
+/// The service uses an 8-character alphanumeric directory and a
+/// Base64Url filename.
+fn is_app_key(key: &str) -> bool {
+    let Some((directory, filename)) = key.split_once('/') else {
+        return false;
+    };
+    if directory.len() != 8 || !directory.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return false;
+    }
+    if filename.is_empty() {
+        return false;
+    }
+    let Ok(decoded) = Base64UrlUnpadded::decode_vec(filename) else {
+        return false;
+    };
+    std::str::from_utf8(&decoded).is_ok()
 }
 
 /// Converts a configured key prefix into slash-separated parts.
@@ -651,10 +722,109 @@ impl StorageProvider for S3Storage {
 
         Ok(resources)
     }
+
+    async fn cleanup_stale_multipart_uploads(&self, _ctx: &Self::Context) -> io::Result<u64> {
+        let Some(expiry) = self.multipart_expiry else {
+            return Ok(0);
+        };
+        let Some(cutoff) = SystemTime::now().checked_sub(expiry) else {
+            return Ok(0);
+        };
+
+        let mut key_marker: Option<String> = None;
+        let mut upload_id_marker: Option<String> = None;
+        let mut aborted = 0_u64;
+
+        loop {
+            let mut request = self.client.list_multipart_uploads().bucket(&self.bucket);
+            if !self.prefix.is_empty() {
+                request = request.prefix(&self.prefix);
+            }
+            if let Some(marker) = key_marker.as_deref() {
+                request = request.key_marker(marker);
+            }
+            if let Some(marker) = upload_id_marker.as_deref() {
+                request = request.upload_id_marker(marker);
+            }
+
+            let output = request
+                .send()
+                .await
+                .map_err(|err| sdk_io_error("ListMultipartUploads", err))?;
+
+            for upload in output.uploads() {
+                let (Some(upload_id), Some(key), Some(initiated)) =
+                    (upload.upload_id(), upload.key(), upload.initiated())
+                else {
+                    debug!("Skipping multipart upload entry with missing fields");
+                    continue;
+                };
+                if !self.key_belongs_to_service(key) {
+                    debug!("Skipping multipart upload for foreign key: {key}");
+                    continue;
+                }
+                let initiated = match SystemTime::try_from(*initiated) {
+                    Ok(initiated) => initiated,
+                    Err(err) => {
+                        debug!("Skipping multipart upload {upload_id} with invalid time: {err}");
+                        continue;
+                    }
+                };
+                if initiated >= cutoff {
+                    continue;
+                }
+
+                match self
+                    .client
+                    .abort_multipart_upload()
+                    .bucket(&self.bucket)
+                    .key(key)
+                    .upload_id(upload_id)
+                    .send()
+                    .await
+                {
+                    Ok(_) => {
+                        aborted += 1;
+                        info!("Aborted stale multipart upload: key={key} upload_id={upload_id}");
+                    }
+                    Err(err)
+                        if err
+                            .as_service_error()
+                            .is_some_and(AbortMultipartUploadError::is_no_such_upload) =>
+                    {
+                        debug!(
+                            "Stale multipart upload is already gone: key={key} upload_id={upload_id}"
+                        );
+                    }
+                    Err(err) => {
+                        warn!(
+                            "Failed to abort stale multipart upload: key={key} upload_id={upload_id}: {}",
+                            DisplayErrorContext(&err)
+                        );
+                    }
+                }
+            }
+
+            if output.is_truncated() != Some(true) {
+                break;
+            }
+            let next_key_marker = output.next_key_marker().map(str::to_owned);
+            let next_upload_id_marker = output.next_upload_id_marker().map(str::to_owned);
+            if next_key_marker.is_none() && next_upload_id_marker.is_none() {
+                warn!("ListMultipartUploads returned a truncated page without markers");
+                break;
+            }
+            key_marker = next_key_marker;
+            upload_id_marker = next_upload_id_marker;
+        }
+
+        Ok(aborted)
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
     use std::pin::Pin;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
@@ -1017,11 +1187,28 @@ mod tests {
         body: Vec<u8>,
     }
 
+    /// One incomplete multipart upload in a mock listing.
+    struct MockUpload {
+        key: Option<String>,
+        upload_id: Option<String>,
+        initiated: Option<String>,
+    }
+
+    /// One page of mock multipart upload listings.
+    #[derive(Default)]
+    struct MockListPage {
+        uploads: Vec<MockUpload>,
+        next_key_marker: Option<String>,
+        next_upload_id_marker: Option<String>,
+    }
+
     /// A mock S3 endpoint that records requests and answers the multipart calls.
     struct MockS3 {
         endpoint: String,
         requests: Arc<Mutex<Vec<RecordedRequest>>>,
         fail_parts: Arc<AtomicBool>,
+        list_pages: Arc<Mutex<Vec<MockListPage>>>,
+        fail_aborts: Arc<Mutex<HashSet<String>>>,
         task: tokio::task::JoinHandle<()>,
     }
 
@@ -1033,9 +1220,13 @@ mod tests {
             let address = listener.local_addr().expect("mock S3 address");
             let requests = Arc::new(Mutex::new(Vec::new()));
             let fail_parts = Arc::new(AtomicBool::new(false));
+            let list_pages = Arc::new(Mutex::new(Vec::new()));
+            let fail_aborts = Arc::new(Mutex::new(HashSet::new()));
             let state = MockState {
                 requests: Arc::clone(&requests),
                 fail_parts: Arc::clone(&fail_parts),
+                list_pages: Arc::clone(&list_pages),
+                fail_aborts: Arc::clone(&fail_aborts),
             };
             let task = tokio::spawn(async move {
                 loop {
@@ -1052,8 +1243,21 @@ mod tests {
                 endpoint: format!("http://{address}"),
                 requests,
                 fail_parts,
+                list_pages,
+                fail_aborts,
                 task,
             }
+        }
+
+        fn set_list_pages(&self, pages: Vec<MockListPage>) {
+            *self.list_pages.lock().expect("list pages lock") = pages;
+        }
+
+        fn fail_abort(&self, upload_id: &str) {
+            self.fail_aborts
+                .lock()
+                .expect("abort lock")
+                .insert(upload_id.to_owned());
         }
     }
 
@@ -1068,6 +1272,8 @@ mod tests {
     struct MockState {
         requests: Arc<Mutex<Vec<RecordedRequest>>>,
         fail_parts: Arc<AtomicBool>,
+        list_pages: Arc<Mutex<Vec<MockListPage>>>,
+        fail_aborts: Arc<Mutex<HashSet<String>>>,
     }
 
     async fn handle_connection(mut stream: TcpStream, state: MockState) -> io::Result<()> {
@@ -1249,6 +1455,9 @@ mod tests {
 
     fn respond_to(request: &RecordedRequest, state: &MockState) -> Vec<u8> {
         let target = request.target.as_str();
+        if request.method == "GET" && target.contains("uploads") {
+            return http_response("200 OK", &[], &list_uploads_xml(state, target));
+        }
         if request.method == "POST" && target.contains("uploads") {
             return http_response("200 OK", &[], INITIATE_XML);
         }
@@ -1264,12 +1473,95 @@ mod tests {
             return http_response("200 OK", &[], COMPLETE_XML);
         }
         if request.method == "DELETE" && target.contains("uploadId=") {
+            let upload_id = query_value_decoded(target, "uploadId").unwrap_or_default();
+            if state
+                .fail_aborts
+                .lock()
+                .expect("abort lock")
+                .contains(&upload_id)
+            {
+                return http_response("403 Forbidden", &[], ACCESS_DENIED_XML);
+            }
             return http_response("204 No Content", &[], "");
         }
         if request.method == "PUT" {
             return http_response("200 OK", &[("ETag", "\"single\"")], "");
         }
         http_response("404 Not Found", &[], "")
+    }
+
+    fn list_uploads_xml(state: &MockState, target: &str) -> String {
+        let pages = state.list_pages.lock().expect("list pages lock");
+        let key_marker = query_value_decoded(target, "key-marker");
+        let page_index = match key_marker.as_deref() {
+            None => 0,
+            Some(marker) => pages
+                .iter()
+                .position(|page| page.next_key_marker.as_deref() == Some(marker))
+                .map_or(pages.len(), |index| index + 1),
+        };
+        let Some(page) = pages.get(page_index) else {
+            return empty_list_xml();
+        };
+
+        let truncated = page.next_key_marker.is_some() || page.next_upload_id_marker.is_some();
+        let mut xml = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?><ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Bucket>test-bucket</Bucket>"#,
+        );
+        if let Some(marker) = &page.next_key_marker {
+            xml.push_str(&format!("<NextKeyMarker>{marker}</NextKeyMarker>"));
+        }
+        if let Some(marker) = &page.next_upload_id_marker {
+            xml.push_str(&format!(
+                "<NextUploadIdMarker>{marker}</NextUploadIdMarker>"
+            ));
+        }
+        xml.push_str(&format!("<IsTruncated>{truncated}</IsTruncated>"));
+        for upload in &page.uploads {
+            xml.push_str("<Upload>");
+            if let Some(key) = &upload.key {
+                xml.push_str(&format!("<Key>{key}</Key>"));
+            }
+            if let Some(upload_id) = &upload.upload_id {
+                xml.push_str(&format!("<UploadId>{upload_id}</UploadId>"));
+            }
+            if let Some(initiated) = &upload.initiated {
+                xml.push_str(&format!("<Initiated>{initiated}</Initiated>"));
+            }
+            xml.push_str("</Upload>");
+        }
+        xml.push_str("</ListMultipartUploadsResult>");
+        xml
+    }
+
+    fn empty_list_xml() -> String {
+        String::from(
+            r#"<?xml version="1.0" encoding="UTF-8"?><ListMultipartUploadsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Bucket>test-bucket</Bucket><IsTruncated>false</IsTruncated></ListMultipartUploadsResult>"#,
+        )
+    }
+
+    fn query_value_decoded(target: &str, name: &str) -> Option<String> {
+        query_value(target, name).map(percent_decode)
+    }
+
+    fn percent_decode(value: &str) -> String {
+        let bytes = value.as_bytes();
+        let mut decoded = Vec::with_capacity(bytes.len());
+        let mut index = 0;
+        while index < bytes.len() {
+            if bytes[index] == b'%' && index + 2 < bytes.len() {
+                if let Ok(text) = std::str::from_utf8(&bytes[index + 1..index + 3]) {
+                    if let Ok(byte) = u8::from_str_radix(text, 16) {
+                        decoded.push(byte);
+                        index += 3;
+                        continue;
+                    }
+                }
+            }
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+        String::from_utf8_lossy(&decoded).into_owned()
     }
 
     fn query_value<'a>(target: &'a str, name: &str) -> Option<&'a str> {
@@ -1301,6 +1593,10 @@ mod tests {
     const ACCESS_DENIED_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?><Error><Code>AccessDenied</Code><Message>part upload denied</Message><RequestId>test</RequestId><HostId>test</HostId></Error>"#;
 
     fn mock_storage(mock: &MockS3) -> S3Storage {
+        mock_storage_with(mock, "files", DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS)
+    }
+
+    fn mock_storage_with(mock: &MockS3, prefix: &str, expiry_hours: u64) -> S3Storage {
         let config = aws_sdk_s3::config::Builder::new()
             .behavior_version_latest()
             .region(Region::new("us-east-1"))
@@ -1317,8 +1613,251 @@ mod tests {
         S3Storage {
             client: Client::from_conf(config),
             bucket: "test-bucket".to_owned(),
-            prefix: "files".to_owned(),
+            prefix: prefix.to_owned(),
+            multipart_expiry: multipart_expiry(expiry_hours),
         }
+    }
+
+    const OLD_INITIATED: &str = "2000-01-01T00:00:00.000Z";
+    const RECENT_INITIATED: &str = "2999-01-01T00:00:00.000Z";
+
+    fn stale_upload(key: &str, upload_id: &str) -> MockUpload {
+        MockUpload {
+            key: Some(key.to_owned()),
+            upload_id: Some(upload_id.to_owned()),
+            initiated: Some(OLD_INITIATED.to_owned()),
+        }
+    }
+
+    fn recent_upload(key: &str, upload_id: &str) -> MockUpload {
+        MockUpload {
+            key: Some(key.to_owned()),
+            upload_id: Some(upload_id.to_owned()),
+            initiated: Some(RECENT_INITIATED.to_owned()),
+        }
+    }
+
+    fn list_page(uploads: Vec<MockUpload>) -> MockListPage {
+        MockListPage {
+            uploads,
+            next_key_marker: None,
+            next_upload_id_marker: None,
+        }
+    }
+
+    #[test]
+    fn multipart_expiry_disables_zero_and_clamps_positive_values() {
+        assert_eq!(multipart_expiry(0), None);
+        assert_eq!(multipart_expiry(1), Some(Duration::from_hours(1)));
+        assert_eq!(multipart_expiry(24), Some(Duration::from_hours(24)));
+    }
+
+    #[tokio::test]
+    async fn cleanup_aborts_only_old_uploads() {
+        let mock = MockS3::start().await;
+        mock.set_list_pages(vec![list_page(vec![
+            stale_upload("files/old.bin", "old-id"),
+            recent_upload("files/new.bin", "new-id"),
+        ])]);
+        let storage = mock_storage(&mock);
+
+        let aborted = storage
+            .cleanup_stale_multipart_uploads(&Default::default())
+            .await
+            .expect("cleanup");
+
+        assert_eq!(aborted, 1);
+        let requests = mock.requests.lock().expect("request lock");
+        let aborts: Vec<&RecordedRequest> = requests
+            .iter()
+            .filter(|request| request.method == "DELETE")
+            .collect();
+        assert_eq!(aborts.len(), 1);
+        assert!(aborts[0].target.contains("uploadId=old-id"));
+        assert!(requests.iter().any(|request| {
+            request.method == "GET"
+                && request.target.contains("uploads")
+                && request.target.contains("prefix=files")
+        }));
+    }
+
+    #[tokio::test]
+    async fn cleanup_follows_multipart_upload_pagination() {
+        let mock = MockS3::start().await;
+        mock.set_list_pages(vec![
+            MockListPage {
+                uploads: vec![recent_upload("files/recent.bin", "recent-id")],
+                next_key_marker: Some("marker-1".to_owned()),
+                next_upload_id_marker: Some("upload-1".to_owned()),
+            },
+            list_page(vec![stale_upload("files/old.bin", "old-id")]),
+        ]);
+        let storage = mock_storage(&mock);
+
+        let aborted = storage
+            .cleanup_stale_multipart_uploads(&Default::default())
+            .await
+            .expect("cleanup");
+
+        assert_eq!(aborted, 1);
+        let requests = mock.requests.lock().expect("request lock");
+        let lists: Vec<&RecordedRequest> = requests
+            .iter()
+            .filter(|request| request.method == "GET" && request.target.contains("uploads"))
+            .collect();
+        assert_eq!(lists.len(), 2);
+        assert!(lists[1].target.contains("key-marker=marker-1"));
+        assert!(lists[1].target.contains("upload-id-marker=upload-1"));
+        assert!(requests.iter().any(|request| {
+            request.method == "DELETE" && request.target.contains("uploadId=old-id")
+        }));
+    }
+
+    #[tokio::test]
+    async fn cleanup_skips_uploads_with_missing_fields() {
+        let mock = MockS3::start().await;
+        mock.set_list_pages(vec![list_page(vec![
+            MockUpload {
+                key: None,
+                upload_id: Some("missing-key-id".to_owned()),
+                initiated: Some(OLD_INITIATED.to_owned()),
+            },
+            MockUpload {
+                key: Some("files/missing-id.bin".to_owned()),
+                upload_id: None,
+                initiated: Some(OLD_INITIATED.to_owned()),
+            },
+            MockUpload {
+                key: Some("files/missing-time.bin".to_owned()),
+                upload_id: Some("missing-time-id".to_owned()),
+                initiated: None,
+            },
+            stale_upload("files/old.bin", "old-id"),
+        ])]);
+        let storage = mock_storage(&mock);
+
+        let aborted = storage
+            .cleanup_stale_multipart_uploads(&Default::default())
+            .await
+            .expect("cleanup");
+
+        assert_eq!(aborted, 1);
+        let requests = mock.requests.lock().expect("request lock");
+        let aborts: Vec<&RecordedRequest> = requests
+            .iter()
+            .filter(|request| request.method == "DELETE")
+            .collect();
+        assert_eq!(aborts.len(), 1);
+        assert!(aborts[0].target.contains("uploadId=old-id"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_continues_after_an_abort_failure() {
+        let mock = MockS3::start().await;
+        mock.set_list_pages(vec![list_page(vec![
+            stale_upload("files/fail.bin", "fail-id"),
+            stale_upload("files/ok.bin", "ok-id"),
+        ])]);
+        mock.fail_abort("fail-id");
+        let storage = mock_storage(&mock);
+
+        let aborted = storage
+            .cleanup_stale_multipart_uploads(&Default::default())
+            .await
+            .expect("cleanup");
+
+        assert_eq!(aborted, 1);
+        let requests = mock.requests.lock().expect("request lock");
+        let aborts: Vec<&RecordedRequest> = requests
+            .iter()
+            .filter(|request| request.method == "DELETE")
+            .collect();
+        assert_eq!(aborts.len(), 2);
+        assert!(
+            aborts
+                .iter()
+                .any(|request| request.target.contains("uploadId=fail-id"))
+        );
+        assert!(
+            aborts
+                .iter()
+                .any(|request| request.target.contains("uploadId=ok-id"))
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_skips_keys_outside_the_configured_prefix() {
+        let mock = MockS3::start().await;
+        mock.set_list_pages(vec![list_page(vec![
+            stale_upload("other/old.bin", "foreign-id"),
+            stale_upload("files/old.bin", "own-id"),
+        ])]);
+        let storage = mock_storage(&mock);
+
+        let aborted = storage
+            .cleanup_stale_multipart_uploads(&Default::default())
+            .await
+            .expect("cleanup");
+
+        assert_eq!(aborted, 1);
+        let requests = mock.requests.lock().expect("request lock");
+        let aborts: Vec<&RecordedRequest> = requests
+            .iter()
+            .filter(|request| request.method == "DELETE")
+            .collect();
+        assert_eq!(aborts.len(), 1);
+        assert!(aborts[0].target.contains("uploadId=own-id"));
+    }
+
+    #[tokio::test]
+    async fn cleanup_skips_keys_outside_the_app_key_shape() {
+        let mock = MockS3::start().await;
+        mock.set_list_pages(vec![list_page(vec![
+            stale_upload("AbCd1234/ZG9j", "own-id"),
+            stale_upload("AbCd1234/file.txt", "dot-id"),
+            stale_upload("short/ZG9j", "short-dir-id"),
+            stale_upload("AbCd1234/", "empty-name-id"),
+            stale_upload("AbCd12345/ZG9j", "long-dir-id"),
+        ])]);
+        let storage = mock_storage_with(&mock, "", DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS);
+
+        let aborted = storage
+            .cleanup_stale_multipart_uploads(&Default::default())
+            .await
+            .expect("cleanup");
+
+        assert_eq!(aborted, 1);
+        let requests = mock.requests.lock().expect("request lock");
+        let aborts: Vec<&RecordedRequest> = requests
+            .iter()
+            .filter(|request| request.method == "DELETE")
+            .collect();
+        assert_eq!(aborts.len(), 1);
+        assert!(aborts[0].target.contains("uploadId=own-id"));
+        assert!(
+            requests
+                .iter()
+                .filter(|request| request.method == "GET" && request.target.contains("uploads"))
+                .all(|request| !request.target.contains("prefix="))
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_is_disabled_when_expiry_is_zero() {
+        let mock = MockS3::start().await;
+        mock.set_list_pages(vec![list_page(vec![stale_upload(
+            "files/old.bin",
+            "old-id",
+        )])]);
+        let storage = mock_storage_with(&mock, "files", 0);
+
+        let aborted = storage
+            .cleanup_stale_multipart_uploads(&Default::default())
+            .await
+            .expect("cleanup");
+
+        assert_eq!(aborted, 0);
+        assert!(mock.requests.lock().expect("request lock").is_empty());
     }
 
     #[tokio::test]

@@ -229,6 +229,10 @@ impl<S: StorageProvider> StorageProvider for RetentionStorage<S> {
         self.inner.delete_partial(path, &ctx.inner).await
     }
 
+    async fn cleanup_stale_multipart_uploads(&self, ctx: &Self::Context) -> io::Result<u64> {
+        self.inner.cleanup_stale_multipart_uploads(&ctx.inner).await
+    }
+
     async fn metadata(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<FileMetadata>> {
         let mut meta_opt = self.inner.metadata(path, &ctx.inner).await?;
         if let Some(meta) = &mut meta_opt {
