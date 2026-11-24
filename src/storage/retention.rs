@@ -147,18 +147,13 @@ impl<S: StorageProvider> RetentionStorage<S> {
             default_duration,
         }
     }
-}
 
-#[async_trait]
-impl<S: StorageProvider> StorageProvider for RetentionStorage<S> {
-    type Context = RetentionContext<S::Context>;
-
-    async fn put(
+    async fn prepare_put(
         &self,
         path: &Path,
         content: AsyncFileReader,
-        ctx: &Self::Context,
-    ) -> io::Result<u64> {
+        ctx: &RetentionContext<S::Context>,
+    ) -> io::Result<(AsyncFileReader, u64)> {
         // Enforce lock on overwrite
         if let Some(mut existing) = self.inner.get(path, &ctx.inner).await? {
             let hdr = RetentionHeader::decode(&mut existing).await?;
@@ -181,11 +176,38 @@ impl<S: StorageProvider> StorageProvider for RetentionStorage<S> {
         let content_stream = tokio_util::io::ReaderStream::new(content);
         let combined = header_stream.chain(content_stream);
 
+        Ok((Box::pin(StreamReader::new(combined)), header_len))
+    }
+}
+
+#[async_trait]
+impl<S: StorageProvider> StorageProvider for RetentionStorage<S> {
+    type Context = RetentionContext<S::Context>;
+
+    async fn put(
+        &self,
+        path: &Path,
+        content: AsyncFileReader,
+        ctx: &Self::Context,
+    ) -> io::Result<u64> {
+        let (reader, header_len) = self.prepare_put(path, content, ctx).await?;
+        let written = self.inner.put(path, reader, &ctx.inner).await?;
+        Ok(written.saturating_sub(header_len))
+    }
+
+    async fn put_sized(
+        &self,
+        path: &Path,
+        content: AsyncFileReader,
+        length: u64,
+        ctx: &Self::Context,
+    ) -> io::Result<u64> {
+        let (reader, header_len) = self.prepare_put(path, content, ctx).await?;
+        let total_length = length.saturating_add(HEADER_V1_SIZE as u64);
         let written = self
             .inner
-            .put(path, Box::pin(StreamReader::new(combined)), &ctx.inner)
+            .put_sized(path, reader, total_length, &ctx.inner)
             .await?;
-
         Ok(written.saturating_sub(header_len))
     }
 
@@ -259,6 +281,7 @@ mod tests {
     use super::*;
 
     use crate::storage::in_memory;
+    use crate::storage::test_support::RecordingStorage;
 
     #[tokio::test]
     async fn test_retention_delete_locking() {
@@ -315,5 +338,27 @@ mod tests {
 
         let exists = storage.get(path, &context).await.unwrap();
         assert!(exists.is_none(), "Partial file should be deleted");
+    }
+
+    #[tokio::test]
+    async fn put_sized_adds_the_header_length_before_the_inner_layer() {
+        let storage = RetentionStorage::new(RecordingStorage::new(), Duration::from_hours(5));
+        let context = RetentionContext::<in_memory::InMemoryContext>::default();
+        let length = 1024_u64;
+
+        storage
+            .put_sized(
+                Path::new("sized_file.txt"),
+                Box::pin(Cursor::new(vec![0_u8; length as usize])),
+                length,
+                &context,
+            )
+            .await
+            .expect("put");
+
+        assert_eq!(
+            storage.inner.lengths(),
+            vec![length + HEADER_V1_SIZE as u64]
+        );
     }
 }

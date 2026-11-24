@@ -113,13 +113,20 @@ async fn upload<S: StorageProvider>(
     };
 
     let randomized_path = generate_random_path(filename);
+    let storage_path = PathBuf::from(".").join(&randomized_path);
+    let content_length = req
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
 
     let reader = payload_to_reader(payload);
+    let result = match content_length {
+        Some(length) => storage.put_sized(&storage_path, reader, length, &ctx).await,
+        None => storage.put(&storage_path, reader, &ctx).await,
+    };
 
-    match storage
-        .put(&PathBuf::from(".").join(&randomized_path), reader, &ctx)
-        .await
-    {
+    match result {
         Ok(_) => {
             // Get the connection info (e.g., "localhost:8080" or "example.com")
             let conn = req.connection_info();
@@ -527,6 +534,7 @@ async fn remote_upload<S: StorageProvider>(
         Ok(fetch) => fetch,
         Err(error) => return error.into_text(),
     };
+    let total_bytes = fetch.total_bytes;
 
     let received_bytes = Arc::new(AtomicU64::new(0));
     let body_too_large = Arc::new(AtomicBool::new(false));
@@ -538,10 +546,13 @@ async fn remote_upload<S: StorageProvider>(
     );
 
     let randomized_path = generate_random_path(&derive_filename(&fetch.url));
-    match storage
-        .put(&PathBuf::from(".").join(&randomized_path), reader, &ctx)
-        .await
-    {
+    let storage_path = PathBuf::from(".").join(&randomized_path);
+    let result = match total_bytes {
+        Some(length) => storage.put_sized(&storage_path, reader, length, &ctx).await,
+        None => storage.put(&storage_path, reader, &ctx).await,
+    };
+
+    match result {
         Ok(_) => {
             let conn = req.connection_info();
             let file_url = PathBuf::from(format!("{}://{}", conn.scheme(), conn.host()))
@@ -620,6 +631,7 @@ async fn run_remote_job<S: StorageProvider + 'static>(
     };
     job.set_total_bytes(fetch.total_bytes);
 
+    let total_bytes = fetch.total_bytes;
     let received_bytes = Arc::new(AtomicU64::new(0));
     let body_too_large = Arc::new(AtomicBool::new(false));
     let progress_job = Arc::clone(&job);
@@ -630,7 +642,12 @@ async fn run_remote_job<S: StorageProvider + 'static>(
         move |next| progress_job.mark_received(next),
     );
 
-    let put = storage.put(job.path(), reader, &ctx);
+    let put = async {
+        match total_bytes {
+            Some(length) => storage.put_sized(job.path(), reader, length, &ctx).await,
+            None => storage.put(job.path(), reader, &ctx).await,
+        }
+    };
     tokio::pin!(put);
     let result = tokio::select! {
         result = &mut put => Some(result),
@@ -841,6 +858,7 @@ mod tests {
 
     use crate::storage::encryption::EncryptedStorage;
     use crate::storage::in_memory::InMemoryStorage;
+    use crate::storage::test_support::RecordingStorage;
     use crate::totp::TotpExt;
 
     fn auth_header() -> (TOTP, String) {
@@ -1372,6 +1390,56 @@ mod tests {
             .await
             .expect("read stored body");
         assert_eq!(body, b"hello");
+    }
+
+    #[actix_web::test]
+    async fn direct_upload_uses_the_content_length() {
+        let (totp, auth) = auth_header();
+        let storage = Arc::new(RecordingStorage::new());
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(Arc::clone(&storage)))
+                .app_data(web::Data::new(totp))
+                .configure(configure::<RecordingStorage>),
+        )
+        .await;
+
+        let request = test::TestRequest::put()
+            .uri("/file.txt")
+            .insert_header((header::AUTHORIZATION, auth))
+            .insert_header((header::CONTENT_LENGTH, "5"))
+            .set_payload("hello")
+            .to_request();
+        let response = test::call_service(&app, request).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(storage.lengths(), vec![5]);
+    }
+
+    #[tokio::test]
+    async fn background_job_uses_the_known_target_length() {
+        let response =
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello".to_vec();
+        let address = one_shot_http_server(response).await;
+        let storage = Arc::new(RecordingStorage::new());
+        let store = JobStore::new();
+        let (_id, job) = store
+            .create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), None)
+            .expect("create a job");
+
+        run_remote_job(
+            Arc::clone(&job),
+            Arc::clone(&storage),
+            Default::default(),
+            prepared_loopback_get(address, "/file"),
+            "http://localhost/file".to_owned(),
+            job.cancel_receiver(),
+        )
+        .await;
+
+        let status = job.status();
+        assert_eq!(status.state.name(), "done");
+        assert_eq!(storage.lengths(), vec![5]);
     }
 
     #[tokio::test]

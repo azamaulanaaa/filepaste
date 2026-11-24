@@ -5,6 +5,8 @@ pub mod in_memory;
 pub mod local;
 pub mod retention;
 pub mod s3;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 use std::future::{Ready, ready};
 use std::io;
@@ -61,6 +63,20 @@ pub trait StorageProvider: Send + Sync {
         mut content: AsyncFileReader,
         ctx: &Self::Context,
     ) -> io::Result<u64>;
+
+    /// Stores content when the input length is known.
+    ///
+    /// The default calls `put`.
+    async fn put_sized(
+        &self,
+        path: &Path,
+        content: AsyncFileReader,
+        _length: u64,
+        ctx: &Self::Context,
+    ) -> io::Result<u64> {
+        self.put(path, content, ctx).await
+    }
+
     async fn get(&self, path: &Path, ctx: &Self::Context) -> io::Result<Option<AsyncFileReader>>;
     async fn delete(&self, path: &Path, ctx: &Self::Context) -> io::Result<()>;
 
@@ -131,6 +147,17 @@ macro_rules! register_storage_system {
                     $(
                         $(#[$meta])*
                         (Self::$variant(s), Context::$variant(c)) => s.put(path, content, c).await,
+                    )*
+                    _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Storage and Context variant mismatch")),
+                }
+            }
+
+            async fn put_sized(&self, path: &Path, content: AsyncFileReader, length: u64, ctx: &Self::Context) -> io::Result<u64> {
+                #[allow(unreachable_patterns, reason = "wildcard unreachable with one variant")]
+                match (self, ctx) {
+                    $(
+                        $(#[$meta])*
+                        (Self::$variant(s), Context::$variant(c)) => s.put_sized(path, content, length, c).await,
                     )*
                     _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Storage and Context variant mismatch")),
                 }
@@ -231,13 +258,16 @@ impl Storage {
                 key_prefix,
                 endpoint_url,
                 multipart_upload_expiry_hours,
+                s3: s3_options,
             } => Self::S3(
-                s3::S3Storage::new_with_multipart_expiry(
+                s3::S3Storage::new_with_options(
                     bucket,
                     region,
                     key_prefix,
                     endpoint_url,
                     multipart_upload_expiry_hours,
+                    s3_options.upload_mode,
+                    s3_options.multipart_part_size_mb,
                 )
                 .await?,
             ),

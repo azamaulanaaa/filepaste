@@ -78,6 +78,8 @@ root = "./data"
 | `storage.key_prefix` | empty | Key prefix for every S3 object. |
 | `storage.endpoint_url` | unset | Endpoint of an S3-compatible service. |
 | `storage.multipart_upload_expiry_hours` | `24` | Incomplete upload expiry. |
+| `storage.s3.upload_mode` | `prefer_single` | S3 upload strategy. |
+| `storage.s3.multipart_part_size_mb` | `8` | Multipart part size. |
 | `default_retention_hours` | `24` | Retention time. |
 | `password_salt` | random | Salt for key derivation. |
 | `totp_secret` | random | TOTP secret. |
@@ -92,9 +94,26 @@ The S3 provider reads credentials from the environment. Set
 when the credentials include a session token. The service reads the
 credentials at request time.
 
-The provider uploads an object in parts of 8 MiB and keeps at most one
-part in memory. S3 accepts at most 10000 parts, so the largest object is
-about 78 GiB.
+The provider uploads an object in parts and keeps at most one part in
+memory. The default part size is 8 MiB. S3 accepts at most 10000 parts,
+so the default object limit is about 78 GiB.
+
+The `storage.s3.upload_mode` value selects the S3 request strategy.
+`prefer_single` uses one streaming `PutObject` when the final length is
+known and at most 5 GiB. It falls back to multipart when the length is
+unknown or larger than 5 GiB. `require_single` uses one `PutObject` only
+and returns an error when the length is unknown or larger than 5 GiB.
+`multipart` keeps the multipart path. The default is `prefer_single`.
+
+A single `PutObject` uses fewer requests. It has no per-part retry, so a
+failed request uploads the whole object again. The 5 GiB limit is the
+S3 single-PUT limit.
+
+The `storage.s3.multipart_part_size_mb` value sets the multipart part
+size. The default is 8 MiB. The valid range is 5 to 128 MiB. The server
+holds one part in memory, so a larger part size increases peak memory.
+The object limit is `part_size * 10000`. A larger part size reduces the
+request count and increases memory use.
 
 The periodic GC run aborts incomplete multipart uploads that are older
 than `storage.multipart_upload_expiry_hours`. The default value is 24

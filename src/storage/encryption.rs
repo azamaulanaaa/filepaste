@@ -21,6 +21,12 @@ pub const CHUNK_SIZE: usize = 64 * 1024; // 64KB chunks
 pub const TAG_SIZE: usize = 16; // Poly1305 tag
 pub const NONCE_SIZE: usize = 7; // ChaCha20 stream nonce
 
+/// Returns the encrypted size of a plaintext length.
+fn encrypted_size(plaintext_len: u64) -> u64 {
+    let chunks = plaintext_len / CHUNK_SIZE as u64 + 1;
+    NONCE_SIZE as u64 + plaintext_len + TAG_SIZE as u64 * chunks
+}
+
 #[derive(Clone, Default)]
 pub struct EncryptedContext<C> {
     pub inner: C,
@@ -112,44 +118,13 @@ impl<S: StorageProvider> EncryptedStorage<S> {
         Ok(key)
     }
 
-    /// Mathematically reconstructs the original plaintext size from the encrypted size.
-    fn plaintext_size(encrypted_size: u64) -> u64 {
-        let min_size = (NONCE_SIZE + TAG_SIZE) as u64;
-
-        // If it's smaller than a nonce + 1 tag, it's incomplete/corrupted. We default to 0.
-        if encrypted_size < min_size {
-            return 0;
-        }
-
-        let ciphertext_size = encrypted_size - NONCE_SIZE as u64;
-        let chunk_with_tag = (CHUNK_SIZE + TAG_SIZE) as u64;
-
-        let full_chunks = ciphertext_size / chunk_with_tag;
-        let last_chunk_ciphertext = ciphertext_size % chunk_with_tag;
-
-        // Safety check against corruption (a chunk can't be smaller than its tag)
-        let last_chunk_plaintext = if last_chunk_ciphertext >= TAG_SIZE as u64 {
-            last_chunk_ciphertext - TAG_SIZE as u64
-        } else {
-            0
-        };
-
-        (full_chunks * CHUNK_SIZE as u64) + last_chunk_plaintext
-    }
-}
-
-#[async_trait]
-impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
-    type Context = EncryptedContext<S::Context>;
-
-    async fn put(
+    /// Builds the encrypted reader for one upload.
+    fn encrypted_reader(
         &self,
-        path: &Path,
         content: AsyncFileReader,
-        ctx: &Self::Context,
-    ) -> io::Result<u64> {
-        // Derive key on the fly
-        let derived_key = self.derive_key(&ctx.password)?;
+        password: &str,
+    ) -> io::Result<AsyncFileReader> {
+        let derived_key = self.derive_key(password)?;
 
         let mut nonce = [0u8; NONCE_SIZE];
         rand::fill(&mut nonce);
@@ -213,10 +188,60 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
         );
 
         let combined_stream = nonce_stream.chain(encrypt_stream);
-        let pipe_reader = StreamReader::new(combined_stream);
+        Ok(Box::pin(StreamReader::new(combined_stream)))
+    }
 
+    /// Mathematically reconstructs the original plaintext size from the encrypted size.
+    fn plaintext_size(encrypted_size: u64) -> u64 {
+        let min_size = (NONCE_SIZE + TAG_SIZE) as u64;
+
+        // If it's smaller than a nonce + 1 tag, it's incomplete/corrupted. We default to 0.
+        if encrypted_size < min_size {
+            return 0;
+        }
+
+        let ciphertext_size = encrypted_size - NONCE_SIZE as u64;
+        let chunk_with_tag = (CHUNK_SIZE + TAG_SIZE) as u64;
+
+        let full_chunks = ciphertext_size / chunk_with_tag;
+        let last_chunk_ciphertext = ciphertext_size % chunk_with_tag;
+
+        // Safety check against corruption (a chunk can't be smaller than its tag)
+        let last_chunk_plaintext = if last_chunk_ciphertext >= TAG_SIZE as u64 {
+            last_chunk_ciphertext - TAG_SIZE as u64
+        } else {
+            0
+        };
+
+        (full_chunks * CHUNK_SIZE as u64) + last_chunk_plaintext
+    }
+}
+
+#[async_trait]
+impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
+    type Context = EncryptedContext<S::Context>;
+
+    async fn put(
+        &self,
+        path: &Path,
+        content: AsyncFileReader,
+        ctx: &Self::Context,
+    ) -> io::Result<u64> {
+        let reader = self.encrypted_reader(content, &ctx.password)?;
+        self.inner.put(path, reader, &ctx.inner).await
+    }
+
+    async fn put_sized(
+        &self,
+        path: &Path,
+        content: AsyncFileReader,
+        length: u64,
+        ctx: &Self::Context,
+    ) -> io::Result<u64> {
+        let reader = self.encrypted_reader(content, &ctx.password)?;
+        let encrypted_length = encrypted_size(length);
         self.inner
-            .put(path, Box::pin(pipe_reader), &ctx.inner)
+            .put_sized(path, reader, encrypted_length, &ctx.inner)
             .await
     }
 
@@ -333,5 +358,94 @@ impl<S: StorageProvider> StorageProvider for EncryptedStorage<S> {
         }
 
         Ok(resources)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+
+    use tokio::io::AsyncReadExt;
+
+    use super::*;
+    use crate::storage::in_memory::{InMemoryContext, InMemoryStorage};
+    use crate::storage::test_support::RecordingStorage;
+
+    #[test]
+    fn encrypted_size_matches_the_stream_at_chunk_boundaries() {
+        let chunk = CHUNK_SIZE as u64;
+        let tag = TAG_SIZE as u64;
+        let nonce = NONCE_SIZE as u64;
+        let cases = [
+            (0, nonce + tag),
+            (1, nonce + 1 + tag),
+            (chunk - 1, nonce + chunk - 1 + tag),
+            (chunk, nonce + chunk + 2 * tag),
+            (chunk + 1, nonce + chunk + 1 + 2 * tag),
+            (2 * chunk, nonce + 2 * chunk + 3 * tag),
+        ];
+
+        for (plaintext, expected) in cases {
+            assert_eq!(encrypted_size(plaintext), expected, "plaintext {plaintext}");
+            assert_eq!(
+                EncryptedStorage::<InMemoryStorage>::plaintext_size(expected),
+                plaintext,
+                "plaintext {plaintext}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn encrypted_stream_length_matches_the_formula() {
+        for length in [
+            0,
+            1,
+            CHUNK_SIZE - 1,
+            CHUNK_SIZE,
+            CHUNK_SIZE + 1,
+            2 * CHUNK_SIZE,
+        ] {
+            let storage = EncryptedStorage::new(InMemoryStorage::new(), "salt".to_owned());
+            let ctx = EncryptedContext::<InMemoryContext>::default();
+
+            storage
+                .put_sized(
+                    Path::new("file"),
+                    Box::pin(Cursor::new(vec![0_u8; length])),
+                    length as u64,
+                    &ctx,
+                )
+                .await
+                .expect("put");
+
+            let mut reader = storage
+                .inner
+                .get(Path::new("file"), &ctx.inner)
+                .await
+                .expect("get")
+                .expect("stored object");
+            let mut ciphertext = Vec::new();
+            reader.read_to_end(&mut ciphertext).await.expect("read");
+            assert_eq!(ciphertext.len() as u64, encrypted_size(length as u64));
+        }
+    }
+
+    #[tokio::test]
+    async fn put_sized_passes_the_encrypted_length_to_the_inner_storage() {
+        let storage = EncryptedStorage::new(RecordingStorage::new(), "salt".to_owned());
+        let ctx = EncryptedContext::<InMemoryContext>::default();
+        let length = 1024_u64;
+
+        storage
+            .put_sized(
+                Path::new("file"),
+                Box::pin(Cursor::new(vec![0_u8; length as usize])),
+                length,
+                &ctx,
+            )
+            .await
+            .expect("put");
+
+        assert_eq!(storage.inner.lengths(), vec![encrypted_size(length)]);
     }
 }

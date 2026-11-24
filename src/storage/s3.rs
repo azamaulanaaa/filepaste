@@ -1,6 +1,9 @@
 use std::future::{Ready, ready};
 use std::io;
 use std::path::{Component, Path, PathBuf};
+use std::pin::Pin;
+use std::sync::Mutex;
+use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
 
 use actix_web::{Error, FromRequest, HttpRequest, dev::Payload};
@@ -16,8 +19,10 @@ use aws_sdk_s3::primitives::{ByteStream, DateTime};
 use aws_sdk_s3::types::{CommonPrefix, CompletedMultipartUpload, CompletedPart, Object};
 use aws_types::region::Region;
 use base64ct::{Base64UrlUnpadded, Encoding};
+use bytes::Bytes;
+use http_body::{Body, Frame, SizeHint};
 use serde::{Deserialize, Serialize};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, ReadBuf};
 use tracing::{debug, info, warn};
 
 use super::{AsyncFileReader, DirMetadata, FileMetadata, Resource, StorageProvider};
@@ -68,12 +73,33 @@ impl FromRequest for S3Context {
     }
 }
 
+/// Selects the S3 request strategy for an upload.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum S3UploadMode {
+    /// Use one PutObject when the length is known and at most 5 GiB.
+    #[default]
+    PreferSingle,
+    /// Use one PutObject and reject an unknown or large length.
+    RequireSingle,
+    /// Use the multipart upload path.
+    Multipart,
+}
+
+/// The largest object that one S3 PutObject call accepts.
+pub const MAX_SINGLE_PUT_SIZE: u64 = 5 * 1024 * 1024 * 1024;
+
+/// The buffer size for one streaming PutObject frame.
+const SINGLE_PUT_BUFFER_SIZE: usize = 64 * 1024;
+
 /// Stores file content in an Amazon S3 bucket.
 pub struct S3Storage {
     client: Client,
     bucket: String,
     prefix: String,
     multipart_expiry: Option<Duration>,
+    upload_mode: S3UploadMode,
+    multipart_part_size: usize,
 }
 
 impl S3Storage {
@@ -106,6 +132,31 @@ impl S3Storage {
         endpoint_url: Option<String>,
         multipart_upload_expiry_hours: u64,
     ) -> io::Result<Self> {
+        Self::new_with_options(
+            bucket,
+            region,
+            key_prefix,
+            endpoint_url,
+            multipart_upload_expiry_hours,
+            S3UploadMode::default(),
+            DEFAULT_MULTIPART_PART_SIZE_MB,
+        )
+        .await
+    }
+
+    /// Creates an S3 storage provider with the expiry, upload mode, and part size.
+    ///
+    /// A value of zero disables cleanup.
+    /// A positive value is at least one hour.
+    pub async fn new_with_options(
+        bucket: String,
+        region: String,
+        key_prefix: String,
+        endpoint_url: Option<String>,
+        multipart_upload_expiry_hours: u64,
+        upload_mode: S3UploadMode,
+        multipart_part_size_mb: u64,
+    ) -> io::Result<Self> {
         if bucket.trim().is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -119,6 +170,7 @@ impl S3Storage {
             ));
         }
         let prefix = normalize_prefix(&key_prefix)?;
+        let multipart_part_size = multipart_part_size(multipart_part_size_mb)?;
 
         let mut builder = aws_sdk_s3::config::Builder::new()
             .behavior_version_latest()
@@ -140,6 +192,8 @@ impl S3Storage {
             bucket,
             prefix,
             multipart_expiry: multipart_expiry(multipart_upload_expiry_hours),
+            upload_mode,
+            multipart_part_size,
         })
     }
 
@@ -150,6 +204,71 @@ impl S3Storage {
         }
         key.strip_prefix(&self.prefix)
             .is_some_and(|rest| rest.starts_with('/'))
+    }
+
+    /// Streams one object with one PutObject call.
+    async fn put_single(
+        &self,
+        key: &str,
+        content: AsyncFileReader,
+        length: u64,
+    ) -> io::Result<u64> {
+        let content_length = i64::try_from(length).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "S3 object is too large to upload",
+            )
+        })?;
+        let body = SinglePutBody::new(content, length);
+
+        self.client
+            .put_object()
+            .bucket(&self.bucket)
+            .key(key)
+            .body(ByteStream::from_body_1_x(body))
+            .content_length(content_length)
+            .send()
+            .await
+            .map_err(|err| sdk_io_error("PutObject", err))?;
+
+        Ok(length)
+    }
+
+    /// Uploads one object with the multipart path.
+    async fn put_multipart(&self, key: &str, mut content: AsyncFileReader) -> io::Result<u64> {
+        let sink = S3UploadSink { storage: self };
+        upload_reader(&sink, key, &mut content, self.multipart_part_size).await
+    }
+}
+
+/// The request strategy for one upload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UploadStrategy {
+    SinglePut,
+    Multipart,
+}
+
+/// Selects the request strategy for a known input length.
+fn select_upload_strategy(mode: S3UploadMode, length: u64) -> io::Result<UploadStrategy> {
+    match mode {
+        S3UploadMode::RequireSingle => {
+            if length > MAX_SINGLE_PUT_SIZE {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "S3 object is larger than the 5 GiB single PutObject limit",
+                ))
+            } else {
+                Ok(UploadStrategy::SinglePut)
+            }
+        }
+        S3UploadMode::PreferSingle => {
+            if length <= MAX_SINGLE_PUT_SIZE {
+                Ok(UploadStrategy::SinglePut)
+            } else {
+                Ok(UploadStrategy::Multipart)
+            }
+        }
+        S3UploadMode::Multipart => Ok(UploadStrategy::Multipart),
     }
 }
 
@@ -335,22 +454,42 @@ fn convert_listing(
     Ok(resources)
 }
 
-/// The part size for multipart uploads.
+/// The default multipart part size in MiB.
+pub const DEFAULT_MULTIPART_PART_SIZE_MB: u64 = 8;
+
+/// The smallest multipart part size in MiB.
+pub const MIN_MULTIPART_PART_SIZE_MB: u64 = 5;
+
+/// The largest multipart part size in MiB.
+pub const MAX_MULTIPART_PART_SIZE_MB: u64 = 128;
+
+/// The default multipart part size in bytes.
 ///
-/// One part is the largest buffer that an upload holds in memory.
-/// S3 accepts at most 10000 parts, so the largest object is about 78 GiB.
-const PART_SIZE: usize = 8 * 1024 * 1024;
-
-/// Smallest part size that S3 accepts, except for the last part.
-const MIN_PART_SIZE: usize = 5 * 1024 * 1024;
-
-/// Largest part size that S3 accepts.
-const MAX_PART_SIZE: usize = 16 * 1024 * 1024;
-
-const _: () = assert!(PART_SIZE >= MIN_PART_SIZE && PART_SIZE <= MAX_PART_SIZE);
+/// The tests use this value. Production uploads use the configured part size.
+#[cfg(test)]
+const DEFAULT_PART_SIZE: usize = 8 * 1024 * 1024;
 
 /// Largest number of parts that S3 accepts in one multipart upload.
 const MAX_PARTS: i32 = 10_000;
+
+/// Validates a configured multipart part size and converts it to bytes.
+///
+/// The server holds one part in memory, so the upper bound limits peak memory.
+fn multipart_part_size(megabytes: u64) -> io::Result<usize> {
+    if !(MIN_MULTIPART_PART_SIZE_MB..=MAX_MULTIPART_PART_SIZE_MB).contains(&megabytes) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "S3 multipart part size must be between 5 and 128 MiB",
+        ));
+    }
+    let megabytes = usize::try_from(megabytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "S3 multipart part size is too large",
+        )
+    })?;
+    Ok(megabytes * 1024 * 1024)
+}
 
 /// Stores the parts of one S3 upload.
 ///
@@ -491,6 +630,79 @@ fn body_length(body: &[u8]) -> io::Result<i64> {
     })
 }
 
+/// Streams a fixed number of bytes for one S3 PutObject call.
+///
+/// The body holds a fixed buffer and stops after the declared length.
+/// A short reader returns an `UnexpectedEof` error.
+struct SinglePutBody {
+    reader: Mutex<AsyncFileReader>,
+    remaining: u64,
+    buffer: Vec<u8>,
+}
+
+impl SinglePutBody {
+    fn new(reader: AsyncFileReader, length: u64) -> Self {
+        Self {
+            reader: Mutex::new(reader),
+            remaining: length,
+            buffer: vec![0_u8; SINGLE_PUT_BUFFER_SIZE],
+        }
+    }
+}
+
+impl Body for SinglePutBody {
+    type Data = Bytes;
+    type Error = io::Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        if this.remaining == 0 {
+            return Poll::Ready(None);
+        }
+
+        let wanted = this.remaining.min(this.buffer.len() as u64) as usize;
+        let read = {
+            let mut read_buf = ReadBuf::new(&mut this.buffer[..wanted]);
+            let poll = match this.reader.lock() {
+                Ok(mut reader) => reader.as_mut().poll_read(cx, &mut read_buf),
+                Err(_) => {
+                    return Poll::Ready(Some(Err(io::Error::other(
+                        "S3 upload reader lock is poisoned",
+                    ))));
+                }
+            };
+            match poll {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Err(err)) => return Poll::Ready(Some(Err(err))),
+                Poll::Ready(Ok(())) => read_buf.filled().len(),
+            }
+        };
+
+        if read == 0 {
+            return Poll::Ready(Some(Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "S3 upload reader ended before the declared length",
+            ))));
+        }
+
+        this.remaining -= read as u64;
+        Poll::Ready(Some(Ok(Frame::data(Bytes::copy_from_slice(
+            &this.buffer[..read],
+        )))))
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.remaining == 0
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::with_exact(self.remaining)
+    }
+}
+
 /// Stores upload parts in one S3 bucket.
 struct S3UploadSink<'a> {
     storage: &'a S3Storage,
@@ -610,12 +822,31 @@ impl StorageProvider for S3Storage {
     async fn put(
         &self,
         path: &Path,
-        mut content: AsyncFileReader,
+        content: AsyncFileReader,
         _ctx: &Self::Context,
     ) -> io::Result<u64> {
         let key = object_key(&self.prefix, path)?;
-        let sink = S3UploadSink { storage: self };
-        upload_reader(&sink, &key, &mut content, PART_SIZE).await
+        if self.upload_mode == S3UploadMode::RequireSingle {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "S3 upload mode require_single needs a known content length",
+            ));
+        }
+        self.put_multipart(&key, content).await
+    }
+
+    async fn put_sized(
+        &self,
+        path: &Path,
+        content: AsyncFileReader,
+        length: u64,
+        _ctx: &Self::Context,
+    ) -> io::Result<u64> {
+        let key = object_key(&self.prefix, path)?;
+        match select_upload_strategy(self.upload_mode, length)? {
+            UploadStrategy::SinglePut => self.put_single(&key, content, length).await,
+            UploadStrategy::Multipart => self.put_multipart(&key, content).await,
+        }
     }
 
     async fn get(&self, path: &Path, _ctx: &Self::Context) -> io::Result<Option<AsyncFileReader>> {
@@ -825,12 +1056,10 @@ impl StorageProvider for S3Storage {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
-    use std::pin::Pin;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-    use std::task::{Context, Poll};
 
-    use tokio::io::{AsyncRead, AsyncWriteExt, ReadBuf};
+    use tokio::io::{AsyncRead, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
 
     use super::*;
@@ -1597,6 +1826,31 @@ mod tests {
     }
 
     fn mock_storage_with(mock: &MockS3, prefix: &str, expiry_hours: u64) -> S3Storage {
+        mock_storage_with_mode(mock, prefix, expiry_hours, S3UploadMode::Multipart)
+    }
+
+    fn mock_storage_with_mode(
+        mock: &MockS3,
+        prefix: &str,
+        expiry_hours: u64,
+        upload_mode: S3UploadMode,
+    ) -> S3Storage {
+        mock_storage_with_settings(
+            mock,
+            prefix,
+            expiry_hours,
+            upload_mode,
+            DEFAULT_MULTIPART_PART_SIZE_MB,
+        )
+    }
+
+    fn mock_storage_with_settings(
+        mock: &MockS3,
+        prefix: &str,
+        expiry_hours: u64,
+        upload_mode: S3UploadMode,
+        multipart_part_size_mb: u64,
+    ) -> S3Storage {
         let config = aws_sdk_s3::config::Builder::new()
             .behavior_version_latest()
             .region(Region::new("us-east-1"))
@@ -1615,6 +1869,9 @@ mod tests {
             bucket: "test-bucket".to_owned(),
             prefix: prefix.to_owned(),
             multipart_expiry: multipart_expiry(expiry_hours),
+            upload_mode,
+            multipart_part_size: multipart_part_size(multipart_part_size_mb)
+                .expect("multipart part size"),
         }
     }
 
@@ -1650,6 +1907,391 @@ mod tests {
         assert_eq!(multipart_expiry(0), None);
         assert_eq!(multipart_expiry(1), Some(Duration::from_hours(1)));
         assert_eq!(multipart_expiry(24), Some(Duration::from_hours(24)));
+    }
+
+    #[test]
+    fn upload_strategy_selects_the_single_put_limit() {
+        assert_eq!(
+            select_upload_strategy(S3UploadMode::PreferSingle, MAX_SINGLE_PUT_SIZE)
+                .expect("strategy"),
+            UploadStrategy::SinglePut
+        );
+        assert_eq!(
+            select_upload_strategy(S3UploadMode::PreferSingle, MAX_SINGLE_PUT_SIZE + 1)
+                .expect("strategy"),
+            UploadStrategy::Multipart
+        );
+        assert_eq!(
+            select_upload_strategy(S3UploadMode::Multipart, 0).expect("strategy"),
+            UploadStrategy::Multipart
+        );
+        let err = select_upload_strategy(S3UploadMode::RequireSingle, MAX_SINGLE_PUT_SIZE + 1)
+            .expect_err("large require_single upload");
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn multipart_part_size_accepts_the_valid_range() {
+        assert_eq!(multipart_part_size(5).expect("5 MiB"), 5 * 1024 * 1024);
+        assert_eq!(multipart_part_size(8).expect("8 MiB"), DEFAULT_PART_SIZE);
+        assert_eq!(multipart_part_size(16).expect("16 MiB"), 16 * 1024 * 1024);
+        assert_eq!(
+            multipart_part_size(128).expect("128 MiB"),
+            128 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn multipart_part_size_rejects_invalid_values() {
+        for value in [0, 4, 129] {
+            let err = multipart_part_size(value).expect_err("invalid part size");
+            assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+            assert!(err.to_string().contains("5 and 128 MiB"));
+        }
+    }
+
+    #[tokio::test]
+    async fn new_rejects_an_invalid_multipart_part_size() {
+        let err = match S3Storage::new_with_options(
+            "bucket".to_owned(),
+            "region".to_owned(),
+            String::new(),
+            None,
+            DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS,
+            S3UploadMode::PreferSingle,
+            4,
+        )
+        .await
+        {
+            Ok(_) => panic!("invalid part size must fail"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn single_put_body_reports_the_exact_size_hint() {
+        let body = SinglePutBody::new(Box::pin(tokio::io::empty()), 1234);
+        assert_eq!(body.size_hint().exact(), Some(1234));
+    }
+
+    #[tokio::test]
+    async fn single_put_body_stops_at_the_declared_length() {
+        let mut body = SinglePutBody::new(Box::pin(tokio::io::repeat(b'x').take(10)), 4);
+        let mut total = 0_u64;
+
+        loop {
+            let frame = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
+            match frame {
+                None => break,
+                Some(Ok(frame)) => {
+                    total += frame.data_ref().expect("data frame").len() as u64;
+                }
+                Some(Err(err)) => panic!("body error: {err}"),
+            }
+        }
+
+        assert_eq!(total, 4);
+    }
+
+    #[tokio::test]
+    async fn single_put_body_reports_a_short_reader() {
+        let mut body = SinglePutBody::new(Box::pin(tokio::io::empty()), 5);
+        let frame = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
+
+        let err = frame.expect("body frame").expect_err("short reader error");
+        assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        assert!(err.to_string().contains("ended before the declared length"));
+    }
+
+    fn known_reader(length: u64) -> AsyncFileReader {
+        Box::pin(tokio::io::repeat(b'x').take(length))
+    }
+
+    #[tokio::test]
+    async fn single_put_modes_use_one_request() {
+        let length = 9 * 1024 * 1024;
+
+        for mode in [S3UploadMode::PreferSingle, S3UploadMode::RequireSingle] {
+            let mock = MockS3::start().await;
+            let storage =
+                mock_storage_with_mode(&mock, "files", DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS, mode);
+
+            let written = storage
+                .put_sized(
+                    Path::new("large.bin"),
+                    known_reader(length),
+                    length,
+                    &Default::default(),
+                )
+                .await
+                .expect("put");
+
+            assert_eq!(written, length, "mode {mode:?}");
+            let requests = mock.requests.lock().expect("request lock");
+            let puts: Vec<&RecordedRequest> = requests
+                .iter()
+                .filter(|request| request.method == "PUT")
+                .collect();
+            assert_eq!(puts.len(), 1, "mode {mode:?}");
+            assert_eq!(puts[0].body.len() as u64, length, "mode {mode:?}");
+            assert!(
+                !requests.iter().any(|request| request.method == "POST"),
+                "mode {mode:?} must not start or complete a multipart upload"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn require_single_rejects_an_unknown_length() {
+        let mock = MockS3::start().await;
+        let storage = mock_storage_with_mode(
+            &mock,
+            "files",
+            DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS,
+            S3UploadMode::RequireSingle,
+        );
+
+        let err = storage
+            .put(
+                Path::new("unknown.bin"),
+                Box::pin(tokio::io::empty()),
+                &Default::default(),
+            )
+            .await
+            .expect_err("unknown length");
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("known content length"));
+        assert!(mock.requests.lock().expect("request lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn require_single_rejects_a_length_above_the_limit() {
+        let mock = MockS3::start().await;
+        let storage = mock_storage_with_mode(
+            &mock,
+            "files",
+            DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS,
+            S3UploadMode::RequireSingle,
+        );
+
+        let err = storage
+            .put_sized(
+                Path::new("large.bin"),
+                Box::pin(tokio::io::empty()),
+                MAX_SINGLE_PUT_SIZE + 1,
+                &Default::default(),
+            )
+            .await
+            .expect_err("large object");
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("5 GiB"));
+        assert!(mock.requests.lock().expect("request lock").is_empty());
+    }
+
+    #[tokio::test]
+    async fn multipart_mode_uses_multipart_for_a_known_length() {
+        let mock = MockS3::start().await;
+        let storage = mock_storage_with_mode(
+            &mock,
+            "files",
+            DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS,
+            S3UploadMode::Multipart,
+        );
+        let length = 9 * 1024 * 1024;
+
+        let written = storage
+            .put_sized(
+                Path::new("large.bin"),
+                known_reader(length),
+                length,
+                &Default::default(),
+            )
+            .await
+            .expect("put");
+
+        assert_eq!(written, length);
+        let requests = mock.requests.lock().expect("request lock");
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.method == "POST" && request.target.contains("uploads"))
+        );
+        let parts: Vec<&RecordedRequest> = requests
+            .iter()
+            .filter(|request| request.method == "PUT" && request.target.contains("partNumber="))
+            .collect();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].body.len(), DEFAULT_PART_SIZE);
+        assert_eq!(
+            parts[1].body.len() as u64,
+            length - DEFAULT_PART_SIZE as u64
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.method == "POST" && request.target.contains("uploadId="))
+        );
+    }
+
+    #[tokio::test]
+    async fn multipart_upload_uses_the_configured_part_size() {
+        let mock = MockS3::start().await;
+        let storage = mock_storage_with_settings(
+            &mock,
+            "files",
+            DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS,
+            S3UploadMode::Multipart,
+            5,
+        );
+        let length = 12 * 1024 * 1024;
+
+        let written = storage
+            .put_sized(
+                Path::new("large.bin"),
+                known_reader(length),
+                length,
+                &Default::default(),
+            )
+            .await
+            .expect("put");
+
+        assert_eq!(written, length);
+        let requests = mock.requests.lock().expect("request lock");
+        let parts: Vec<&RecordedRequest> = requests
+            .iter()
+            .filter(|request| request.method == "PUT" && request.target.contains("partNumber="))
+            .collect();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(parts[0].body.len(), 5 * 1024 * 1024);
+        assert_eq!(parts[1].body.len(), 5 * 1024 * 1024);
+        assert_eq!(parts[2].body.len(), 2 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn single_put_ignores_the_configured_part_size() {
+        let mock = MockS3::start().await;
+        let storage = mock_storage_with_settings(
+            &mock,
+            "files",
+            DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS,
+            S3UploadMode::PreferSingle,
+            16,
+        );
+        let length = 9 * 1024 * 1024;
+
+        let written = storage
+            .put_sized(
+                Path::new("large.bin"),
+                known_reader(length),
+                length,
+                &Default::default(),
+            )
+            .await
+            .expect("put");
+
+        assert_eq!(written, length);
+        let requests = mock.requests.lock().expect("request lock");
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|request| request.method == "PUT")
+                .count(),
+            1
+        );
+        assert!(!requests.iter().any(|request| request.method == "POST"));
+    }
+
+    #[tokio::test]
+    async fn prefer_single_falls_back_to_multipart_for_an_unknown_length() {
+        let mock = MockS3::start().await;
+        let storage = mock_storage_with_mode(
+            &mock,
+            "files",
+            DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS,
+            S3UploadMode::PreferSingle,
+        );
+        let length = 9 * 1024 * 1024;
+
+        let written = storage
+            .put(
+                Path::new("large.bin"),
+                known_reader(length),
+                &Default::default(),
+            )
+            .await
+            .expect("put");
+
+        assert_eq!(written, length);
+        let requests = mock.requests.lock().expect("request lock");
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.method == "POST" && request.target.contains("uploads"))
+        );
+        assert!(
+            requests
+                .iter()
+                .any(|request| request.method == "POST" && request.target.contains("uploadId="))
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_length_input_uses_one_put() {
+        let mock = MockS3::start().await;
+        let storage = mock_storage_with_mode(
+            &mock,
+            "files",
+            DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS,
+            S3UploadMode::PreferSingle,
+        );
+
+        let written = storage
+            .put_sized(
+                Path::new("empty.bin"),
+                Box::pin(tokio::io::empty()),
+                0,
+                &Default::default(),
+            )
+            .await
+            .expect("put");
+
+        assert_eq!(written, 0);
+        let requests = mock.requests.lock().expect("request lock");
+        let puts: Vec<&RecordedRequest> = requests
+            .iter()
+            .filter(|request| request.method == "PUT")
+            .collect();
+        assert_eq!(puts.len(), 1);
+        assert!(puts[0].body.is_empty());
+        assert!(!requests.iter().any(|request| request.method == "POST"));
+    }
+
+    #[tokio::test]
+    async fn short_reader_returns_an_error() {
+        let mock = MockS3::start().await;
+        let storage = mock_storage_with_mode(
+            &mock,
+            "files",
+            DEFAULT_MULTIPART_UPLOAD_EXPIRY_HOURS,
+            S3UploadMode::PreferSingle,
+        );
+        let length = 9 * 1024 * 1024;
+
+        let err = storage
+            .put_sized(
+                Path::new("short.bin"),
+                Box::pin(tokio::io::repeat(b'x').take(1)),
+                length,
+                &Default::default(),
+            )
+            .await
+            .expect_err("short reader");
+
+        assert!(err.to_string().contains("ended before the declared length"));
     }
 
     #[tokio::test]
@@ -1864,7 +2506,7 @@ mod tests {
     async fn put_uploads_large_input_with_multipart_requests() {
         let mock = MockS3::start().await;
         let storage = mock_storage(&mock);
-        let length = PART_SIZE as u64 + 1;
+        let length = DEFAULT_PART_SIZE as u64 + 1;
         let content: AsyncFileReader = Box::pin(tokio::io::repeat(b'x').take(length));
 
         let written = storage
@@ -1886,7 +2528,7 @@ mod tests {
             .filter(|request| request.method == "PUT" && request.target.contains("partNumber="))
             .collect();
         assert_eq!(parts.len(), 2);
-        assert_eq!(parts[0].body.len(), PART_SIZE);
+        assert_eq!(parts[0].body.len(), DEFAULT_PART_SIZE);
         assert_eq!(parts[1].body.len(), 1);
 
         let complete = requests
@@ -1907,7 +2549,8 @@ mod tests {
         let mock = MockS3::start().await;
         mock.fail_parts.store(true, Ordering::SeqCst);
         let storage = mock_storage(&mock);
-        let content: AsyncFileReader = Box::pin(tokio::io::repeat(b'x').take(PART_SIZE as u64));
+        let content: AsyncFileReader =
+            Box::pin(tokio::io::repeat(b'x').take(DEFAULT_PART_SIZE as u64));
 
         let err = storage
             .put(Path::new("large.bin"), content, &Default::default())
