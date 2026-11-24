@@ -91,6 +91,10 @@ The S3 provider reads credentials from the environment. Set
 when the credentials include a session token. The service reads the
 credentials at request time.
 
+The provider uploads an object in parts of 8 MiB and keeps at most one
+part in memory. S3 accepts at most 10000 parts, so the largest object is
+about 78 GiB.
+
 The `password_salt` and `totp_secret` values are 32 random
 alphanumeric characters. The service creates new values when it writes
 a new file. Keep the file. A new `password_salt` makes the stored files
