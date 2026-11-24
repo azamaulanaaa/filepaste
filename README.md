@@ -58,6 +58,7 @@ totp_secret = "<32 random alphanumeric characters>"
 [endpoint]
 host = "0.0.0.0"
 port = 3000
+job_store_path = "/home/<user>/.local/state/filepaste/jobs"
 
 [storage]
 type = "local"
@@ -69,6 +70,7 @@ root = "./data"
 | `endpoint.host` | `0.0.0.0` | Bind address. |
 | `endpoint.port` | `3000` | Bind port. |
 | `endpoint.index_path` | unset | Path to an index file. |
+| `endpoint.job_store_path` | state directory | Job record directory. |
 | `storage.type` | `local` | Storage type: `local` or `s3`. |
 | `storage.root` | `./data` | Storage root for the `local` type. |
 | `storage.bucket` | unset | S3 bucket name for the `s3` type. |
@@ -93,6 +95,14 @@ The `password_salt` and `totp_secret` values are 32 random
 alphanumeric characters. The service creates new values when it writes
 a new file. Keep the file. A new `password_salt` makes the stored files
 unreadable. A new `totp_secret` invalidates the TOTP entry.
+
+The service writes the remote upload job records to
+`endpoint.job_store_path`. When `XDG_STATE_HOME` names an absolute
+path, the default is `$XDG_STATE_HOME/filepaste/jobs`. Otherwise the
+default is `$HOME/.local/state/filepaste/jobs`. The directory is not
+inside the storage root. The service creates the directory with mode
+`0700` and writes each record file with mode `0600` on Unix. It logs a
+warning and skips a corrupt record.
 
 ## Command-line options
 
@@ -229,8 +239,11 @@ the state is `fetching`. It sets `Cache-Control: no-store` on every
 response.
 
 The service keeps a finished job for one hour. An expired job returns
-404. The jobs are in memory. A restart loses an unfinished job. The
-stored file stays after a restart when the fetch completed.
+404. The service writes each job record to `endpoint.job_store_path`.
+A restart keeps a finished job. A job that the restart interrupted
+becomes `failed` with the error `Server restarted before the job
+completed`. The stored file stays after a restart when the fetch
+completed.
 
 Cancel a job with `DELETE`:
 

@@ -689,7 +689,16 @@ async fn create_remote_upload<S: StorageProvider + 'static>(
         .to_string_lossy()
         .to_string();
 
-    let (id, job) = jobs.create(storage_path, None);
+    let (id, job) = match jobs.create(storage_path, None) {
+        Ok(created) => created,
+        Err(error) => {
+            tracing::error!("Cannot store the remote upload job record: {error}");
+            return json_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Cannot store the job record",
+            );
+        }
+    };
     let task_job = Arc::clone(&job);
     let task_storage = Arc::clone(storage.get_ref());
     let cancel = job.cancel_receiver();
@@ -1025,7 +1034,9 @@ mod tests {
     async fn checks_a_job_token_and_an_unknown_job() {
         let (totp, _auth) = auth_header();
         let store = JobStore::new();
-        let (id, job) = store.create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), None);
+        let (id, job) = store
+            .create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), None)
+            .expect("create a job");
         let token = job.token().to_owned();
         let app = test::init_service(
             App::new()
@@ -1061,7 +1072,9 @@ mod tests {
     async fn returns_a_fetching_job_status() {
         let (totp, _auth) = auth_header();
         let store = JobStore::new();
-        let (id, job) = store.create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), Some(100));
+        let (id, job) = store
+            .create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), Some(100))
+            .expect("create a job");
         job.mark_received(10);
         let token = job.token().to_owned();
         let app = test::init_service(
@@ -1101,7 +1114,9 @@ mod tests {
     async fn returns_a_done_job_status() {
         let (totp, _auth) = auth_header();
         let store = JobStore::new();
-        let (id, job) = store.create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), Some(100));
+        let (id, job) = store
+            .create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), Some(100))
+            .expect("create a job");
         job.mark_received(100);
         job.finish_done("http://localhost:8080/AbCdEfGh/ZmlsZQ".to_owned());
         let token = job.token().to_owned();
@@ -1135,7 +1150,7 @@ mod tests {
         let storage = Arc::new(InMemoryStorage::new());
         let store = JobStore::new();
         let path = PathBuf::from("./AbCdEfGh/ZmlsZQ");
-        let (id, job) = store.create(path.clone(), None);
+        let (id, job) = store.create(path.clone(), None).expect("create a job");
         let token = job.token().to_owned();
         storage
             .put(
@@ -1178,7 +1193,7 @@ mod tests {
         let storage = Arc::new(InMemoryStorage::new());
         let store = JobStore::new();
         let path = PathBuf::from("./AbCdEfGh/ZmlsZQ");
-        let (id, job) = store.create(path.clone(), None);
+        let (id, job) = store.create(path.clone(), None).expect("create a job");
         let token = job.token().to_owned();
         storage
             .put(
@@ -1241,7 +1256,9 @@ mod tests {
         let (totp, _auth) = auth_header();
         let storage = EncryptedStorage::new(InMemoryStorage::new(), "test-salt".to_owned());
         let store = JobStore::new();
-        let (id, job) = store.create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), None);
+        let (id, job) = store
+            .create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), None)
+            .expect("create a job");
         let token = job.token().to_owned();
         let app = test::init_service(
             App::new()
@@ -1261,6 +1278,63 @@ mod tests {
         assert!(store.get(&id).is_none());
     }
 
+    #[actix_web::test]
+    async fn cancel_deletes_the_persisted_record() {
+        let (totp, _auth) = auth_header();
+        let dir = tempfile::tempdir().expect("create the record directory");
+        let store = JobStore::open(dir.path()).expect("open the job store");
+        let (id, job) = store
+            .create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), None)
+            .expect("create a job");
+        let token = job.token().to_owned();
+        let record = dir.path().join(format!("{id}.json"));
+        assert!(record.exists());
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(Arc::new(InMemoryStorage::new())))
+                .app_data(web::Data::new(totp))
+                .app_data(web::Data::new(store.clone()))
+                .configure(configure::<InMemoryStorage>),
+        )
+        .await;
+
+        let request = test::TestRequest::delete()
+            .uri(&format!("/api/remote-uploads/{id}"))
+            .insert_header((header::AUTHORIZATION, format!("Bearer {token}")))
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(!record.exists());
+    }
+
+    #[actix_web::test]
+    async fn rejects_a_job_when_the_record_cannot_be_written() {
+        let (totp, auth) = auth_header();
+        let dir = tempfile::tempdir().expect("create the record directory");
+        let store = JobStore::open(dir.path()).expect("open the job store");
+        std::fs::remove_dir_all(dir.path()).expect("remove the record directory");
+        let app = test::init_service(
+            App::new()
+                .app_data(web::Data::new(Arc::new(InMemoryStorage::new())))
+                .app_data(web::Data::new(totp))
+                .app_data(web::Data::new(store.clone()))
+                .configure(configure::<InMemoryStorage>),
+        )
+        .await;
+
+        let request = test::TestRequest::post()
+            .uri("/api/remote-uploads")
+            .insert_header((header::AUTHORIZATION, auth))
+            .insert_header((header::CONTENT_TYPE, "text/plain"))
+            .set_payload("curl https://1.1.1.1/")
+            .to_request();
+        let response = test::call_service(&app, request).await;
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body: serde_json::Value = test::read_body_json(response).await;
+        assert_eq!(body["error"], "Cannot store the job record");
+        assert_eq!(store.prune_expired(), 0);
+    }
+
     #[tokio::test]
     async fn background_job_stores_the_target_body() {
         let response =
@@ -1268,7 +1342,9 @@ mod tests {
         let address = one_shot_http_server(response).await;
         let storage = Arc::new(InMemoryStorage::new());
         let store = JobStore::new();
-        let (_id, job) = store.create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), None);
+        let (_id, job) = store
+            .create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), None)
+            .expect("create a job");
 
         run_remote_job(
             Arc::clone(&job),
@@ -1306,7 +1382,9 @@ mod tests {
         let address = one_shot_http_server(response).await;
         let storage = Arc::new(InMemoryStorage::new());
         let store = JobStore::new();
-        let (_id, job) = store.create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), None);
+        let (_id, job) = store
+            .create(PathBuf::from("./AbCdEfGh/ZmlsZQ"), None)
+            .expect("create a job");
 
         run_remote_job(
             Arc::clone(&job),

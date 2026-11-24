@@ -20,10 +20,12 @@ pub async fn serve<S>(
 where
     S: StorageProvider + 'static,
 {
+    let jobs = remote_jobs::JobStore::open(config.job_store_path.clone())
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     let config_data = web::Data::new(config.clone());
     let storage_data = web::Data::new(storage);
     let totp_data = web::Data::new(totp);
-    let jobs_data = web::Data::new(remote_jobs::JobStore::new());
+    let jobs_data = web::Data::new(jobs);
 
     let prune_jobs = jobs_data.clone();
     let _prune_handle = tokio::spawn(async move {
