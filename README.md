@@ -206,7 +206,7 @@ the job ID, the job token, the state, and the received byte count:
 ```json
 {
   "id": "6f3a9b2c1d4e5f60718293a4b5",
-  "token": "4b3a2c1d0e9f8a7b6c5d4e3f2a1b0c9d8e7f6a5b4c3",
+  "token": "<job-token>",
   "state": "fetching",
   "received_bytes": 0
 }
