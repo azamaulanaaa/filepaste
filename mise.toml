@@ -3,6 +3,7 @@
 
 [tools]
 cargo-deny = "0"
+cargo-dist = "0.31.0"
 cocogitto = "7"
 editorconfig-checker = "4"
 "github:reteps/dockerfmt" = "0"
